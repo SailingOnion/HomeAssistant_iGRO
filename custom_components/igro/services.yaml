@@ -1,0 +1,203 @@
+log_action:
+  name: Log grow action
+  description: Record a watering, feeding, training, measurement, or note entry in the iGro journal.
+  fields:
+    plant:
+      name: Plant
+      description: Plant ID or exact plant name.
+      example: "Northern Lights #1"
+      selector:
+        text:
+    log_type:
+      name: Action type
+      description: Type of grow action to log.
+      required: true
+      default: water
+      selector:
+        select:
+          options:
+            - water
+            - feed
+            - training
+            - defoliation
+            - measurement
+            - transplant
+            - flush
+            - pest_issue
+            - note
+    title:
+      name: Title
+      description: Optional short summary.
+      selector:
+        text:
+    notes:
+      name: Notes
+      description: Detailed observations.
+      selector:
+        text:
+          multiline: true
+    water_volume_ml:
+      name: Water volume (mL)
+      selector:
+        number:
+          min: 0
+          max: 50000
+          unit_of_measurement: mL
+    ph:
+      name: Input pH
+      selector:
+        number:
+          min: 0
+          max: 14
+          step: 0.1
+    ec:
+      name: Input EC (mS/cm)
+      selector:
+        number:
+          min: 0
+          max: 10
+          step: 0.1
+    ppm:
+      name: Input PPM
+      selector:
+        number:
+          min: 0
+          max: 5000
+    height_cm:
+      name: Plant height (cm)
+      selector:
+        number:
+          min: 0
+          max: 500
+          step: 0.5
+    training_method:
+      name: Training method
+      example: "LST"
+      selector:
+        text:
+
+set_stage:
+  name: Set plant stage
+  description: Transition a plant to a specific grow lifecycle stage.
+  fields:
+    plant:
+      name: Plant
+      description: Plant ID or exact plant name.
+      required: true
+      selector:
+        text:
+    stage:
+      name: Stage
+      required: true
+      selector:
+        select:
+          options:
+            - germination
+            - seedling
+            - vegetative
+            - flowering
+            - drying
+            - curing
+            - harvested
+            - archived
+    notes:
+      name: Notes
+      selector:
+        text:
+
+advance_stage:
+  name: Advance plant stage
+  description: Move a plant to the next lifecycle stage in order.
+  fields:
+    plant:
+      name: Plant
+      description: Plant ID or exact plant name.
+      required: true
+      selector:
+        text:
+    notes:
+      name: Notes
+      selector:
+        text:
+
+capture_photo:
+  name: Capture camera photo
+  description: Take a snapshot from a Home Assistant camera entity and save it to the iGro photo journal.
+  fields:
+    plant:
+      name: Plant
+      description: Plant ID or exact plant name.
+      selector:
+        text:
+    camera_entity_id:
+      name: Camera entity
+      description: Optional override; uses the plant's or tent's linked camera if omitted.
+      selector:
+        entity:
+          domain: camera
+    caption:
+      name: Caption
+      selector:
+        text:
+
+create_plant:
+  name: Create plant
+  description: Add a new plant to iGro.
+  fields:
+    name:
+      name: Name
+      required: true
+      selector:
+        text:
+    strain:
+      name: Strain / Cultivar
+      selector:
+        text:
+    breeder:
+      name: Breeder
+      selector:
+        text:
+    plant_type:
+      name: Plant type
+      default: photoperiod
+      selector:
+        select:
+          options:
+            - photoperiod
+            - autoflower
+            - clone
+            - vegetable
+            - herb
+            - houseplant
+            - other
+    medium:
+      name: Grow medium
+      default: soil
+      selector:
+        select:
+          options:
+            - soil
+            - coco
+            - hydroponic
+            - dwc
+            - aeroponic
+            - living_soil
+            - rockwool
+            - other
+    stage:
+      name: Initial stage
+      default: germination
+      selector:
+        select:
+          options:
+            - germination
+            - seedling
+            - vegetative
+            - flowering
+            - drying
+            - curing
+    notes:
+      name: Notes
+      selector:
+        text:
+          multiline: true

@@ -1,0 +1,17 @@
+{
+  "domain": "igro",
+  "name": "iGro",
+  "codeowners": ["@SailingOnion"],
+  "config_flow": true,
+  "dependencies": [
+    "frontend",
+    "http",
+    "panel_custom",
+    "websocket_api"
+  ],
+  "documentation": "https://github.com/SailingOnion/HomeAssistant_iGRO",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/SailingOnion/HomeAssistant_iGRO/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

@@ -1,0 +1,33 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up iGro",
+        "description": "Configure your plant grow cycle manager. iGro stores grow data in a dedicated SQLite database inside your Home Assistant config folder.",
+        "data": {
+          "panel_title": "Sidebar panel title",
+          "panel_icon": "Sidebar panel icon (MDI)",
+          "db_path": "SQLite database path (relative to /config or absolute)",
+          "media_path": "Photo storage folder (relative to /config or absolute)",
+          "leaf_temp_offset_c": "Default leaf temperature offset (°C for VPD)"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "iGro is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "iGro Options",
+        "description": "Update iGro sidebar and VPD calculation defaults.",
+        "data": {
+          "panel_title": "Sidebar panel title",
+          "panel_icon": "Sidebar panel icon (MDI)",
+          "leaf_temp_offset_c": "Default leaf temperature offset (°C for VPD)"
+        }
+      }
+    }
+  }
+}
