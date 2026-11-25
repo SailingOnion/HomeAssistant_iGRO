@@ -11,7 +11,7 @@ import {
   formatDateTime,
   scaleNutrientsForVolume,
   stageBadgeHtml,
-} from "./api.js?v=0.2.0";
+} from "./api.js?v=0.2.1";
 
 function entityOptionsHtml(entities = [], selected = "", placeholder = "None") {
   const opts = [`<option value="">${escapeHtml(placeholder)}</option>`];
@@ -639,6 +639,67 @@ export function renderLightboxModal(photo) {
               <button class="btn btn-sm btn-danger" data-delete-photo="${escapeHtml(photo.id)}">🗑 Delete</button>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+export function renderStageModal({ plant, targetStage }) {
+  const todayLocal = new Date(Date.now() - new Date().getTimezoneOffset() * 60000)
+    .toISOString()
+    .slice(0, 10);
+  const targetLabel = STAGE_META[targetStage]?.label || targetStage;
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" style="max-width:480px;" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">🔄 Change Growth Stage</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="stage-form">
+          <div class="modal-body">
+            <div style="font-size:14px;font-weight:600;">${escapeHtml(plant.name)}</div>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px;border-radius:12px;background:var(--igro-surface-2);border:1px solid var(--igro-border);">
+              ${stageBadgeHtml(plant.stage)}
+              <span style="color:var(--igro-text-muted);font-weight:700;">→</span>
+              ${stageBadgeHtml(targetStage)}
+            </div>
+            <input type="hidden" name="today_default" value="${todayLocal}" />
+            <div class="form-field">
+              <label class="form-label">Transition Date</label>
+              <input class="input" type="date" name="changed_at" value="${todayLocal}" />
+            </div>
+            <div class="form-field">
+              <label class="form-label">Note (optional)</label>
+              <textarea class="textarea" id="stage-note-input" name="notes" placeholder="e.g. Flipped light schedule to 12/12, transplanted to 5 gal fabric pot..."></textarea>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">Move to ${escapeHtml(targetLabel)}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderConfirmModal({ title, message, confirmLabel = "Delete", danger = true }) {
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" style="max-width:440px;" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">${escapeHtml(title || "Confirm Action")}</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <div class="modal-body">
+          <p style="margin:0;font-size:14px;line-height:1.5;color:var(--igro-text);">${escapeHtml(message || "Are you sure?")}</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn" data-close-modal="1">Cancel</button>
+          <button type="button" class="btn ${danger ? "btn-danger" : "btn-primary"}" id="confirm-modal-ok">${escapeHtml(confirmLabel)}</button>
         </div>
       </div>
     </div>

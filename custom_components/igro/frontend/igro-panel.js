@@ -16,8 +16,9 @@ import {
   scaleNutrientsForVolume,
   stageBadgeHtml,
   vpdBadgeHtml,
-} from "./api.js?v=0.2.0";
+} from "./api.js?v=0.2.1";
 import {
+  renderConfirmModal,
   renderEnvironmentModal,
   renderLightboxModal,
   renderLogModal,
@@ -25,8 +26,9 @@ import {
   renderPlantModal,
   renderPresetModal,
   renderScaledMixHtml,
-} from "./modals.js?v=0.2.0";
-import { PANEL_STYLES } from "./styles.js?v=0.2.0";
+  renderStageModal,
+} from "./modals.js?v=0.2.1";
+import { PANEL_STYLES } from "./styles.js?v=0.2.1";
 
 class IGroPanel extends HTMLElement {
   constructor() {
@@ -96,6 +98,13 @@ class IGroPanel extends HTMLElement {
   }
 
   connectedCallback() {
+    this._onKeyDown = (e) => {
+      if (e.key === "Escape" && this._modal) {
+        this._modal = null;
+        this._render();
+      }
+    };
+    window.addEventListener("keydown", this._onKeyDown);
     this._pollTimer = setInterval(() => {
       if (this._api && !this._modal) {
         this._refreshState(false);
@@ -104,10 +113,22 @@ class IGroPanel extends HTMLElement {
   }
 
   disconnectedCallback() {
+    if (this._onKeyDown) {
+      window.removeEventListener("keydown", this._onKeyDown);
+      this._onKeyDown = null;
+    }
     if (this._pollTimer) {
       clearInterval(this._pollTimer);
       this._pollTimer = null;
     }
+  }
+
+  _openConfirm({ title, message, confirmLabel = "Delete", danger = true, onConfirm }) {
+    this._modal = {
+      type: "confirm",
+      data: { title, message, confirmLabel, danger, onConfirm },
+    };
+    this._render();
   }
 
   _showToast(message, isError = false) {
@@ -234,6 +255,10 @@ class IGroPanel extends HTMLElement {
         modalHtml = renderPhotoModal(this._modal.data || {}, this._state, this._haEntities);
       } else if (this._modal.type === "lightbox") {
         modalHtml = renderLightboxModal(this._modal.data);
+      } else if (this._modal.type === "stage") {
+        modalHtml = renderStageModal(this._modal.data);
+      } else if (this._modal.type === "confirm") {
+        modalHtml = renderConfirmModal(this._modal.data);
       }
     }
 
@@ -935,26 +960,30 @@ class IGroPanel extends HTMLElement {
       }
     });
 
-    root.getElementById("btn-delete-plant")?.addEventListener("click", async () => {
+    root.getElementById("btn-delete-plant")?.addEventListener("click", () => {
       const plant = (this._state.plants || []).find((p) => p.id === this._selectedPlantId);
-      if (plant && confirm(`Delete "${plant.name}" and all of its logs & photos?`)) {
-        await this._api.deletePlant(plant.id);
-        this._selectedPlantId = null;
-        await this._refreshState();
-        this._showToast(`Deleted ${plant.name}`);
-      }
+      if (!plant) return;
+      this._openConfirm({
+        title: "🗑 Delete Plant",
+        message: `Delete "${plant.name}" and all of its journal logs and photos? This cannot be undone.`,
+        confirmLabel: "Delete Plant",
+        onConfirm: async () => {
+          await this._api.deletePlant(plant.id);
+          this._selectedPlantId = null;
+          await this._refreshState();
+          this._showToast(`Deleted ${plant.name}`);
+        },
+      });
     });
 
     root.querySelectorAll("[data-set-stage]").forEach((el) => {
-      el.addEventListener("click", async () => {
-        const stage = el.dataset.setStage;
+      el.addEventListener("click", () => {
+        const targetStage = el.dataset.setStage;
         const plant = (this._state.plants || []).find((p) => p.id === this._selectedPlantId);
-        if (!plant || plant.stage === stage) return;
-        const note = prompt(`Move "${plant.name}" to ${STAGE_META[stage]?.label || stage}? Optional note:`, "");
-        if (note === null) return;
-        await this._api.setPlantStage(plant.id, stage, note || null);
-        await this._refreshState();
-        this._showToast(`Moved to ${STAGE_META[stage]?.label || stage}`);
+        if (!plant || plant.stage === targetStage) return;
+        this._modal = { type: "stage", data: { plant, targetStage } };
+        this._render();
+        this.shadowRoot.getElementById("stage-note-input")?.focus();
       });
     });
 
@@ -1008,13 +1037,19 @@ class IGroPanel extends HTMLElement {
     });
 
     root.querySelectorAll("[data-delete-preset]").forEach((el) => {
-      el.addEventListener("click", async () => {
+      el.addEventListener("click", () => {
         const pr = (this._state.nutrient_presets || []).find((p) => p.id === el.dataset.deletePreset);
-        if (pr && confirm(`Delete nutrient preset "${pr.name}"?`)) {
-          await this._api.deletePreset(pr.id);
-          await this._refreshState();
-          this._showToast(`Deleted preset "${pr.name}"`);
-        }
+        if (!pr) return;
+        this._openConfirm({
+          title: "🗑 Delete Nutrient Preset",
+          message: `Delete nutrient preset "${pr.name}"?`,
+          confirmLabel: "Delete Preset",
+          onConfirm: async () => {
+            await this._api.deletePreset(pr.id);
+            await this._refreshState();
+            this._showToast(`Deleted preset "${pr.name}"`);
+          },
+        });
       });
     });
 
@@ -1080,26 +1115,38 @@ class IGroPanel extends HTMLElement {
     });
 
     root.querySelectorAll("[data-delete-env]").forEach((el) => {
-      el.addEventListener("click", async (e) => {
+      el.addEventListener("click", (e) => {
         e.stopPropagation();
         const envId = el.dataset.deleteEnv;
         const env = (this._state.environments || []).find((item) => item.id === envId);
-        if (env && confirm(`Delete environment "${env.name}"? Plants inside will become unassigned.`)) {
-          await this._api.deleteEnvironment(env.id);
-          await this._refreshState();
-          this._showToast(`Deleted ${env.name}`);
-        }
+        if (!env) return;
+        this._openConfirm({
+          title: "🗑 Delete Environment",
+          message: `Delete environment "${env.name}"? Plants inside will stay intact and become unassigned.`,
+          confirmLabel: "Delete Environment",
+          onConfirm: async () => {
+            await this._api.deleteEnvironment(env.id);
+            await this._refreshState();
+            this._showToast(`Deleted ${env.name}`);
+          },
+        });
       });
     });
 
     // Delete log
     root.querySelectorAll("[data-delete-log]").forEach((el) => {
-      el.addEventListener("click", async () => {
-        if (confirm("Delete this journal entry?")) {
-          await this._api.deleteLog(el.dataset.deleteLog);
-          await this._refreshState();
-          this._showToast("Entry deleted");
-        }
+      el.addEventListener("click", () => {
+        const logId = el.dataset.deleteLog;
+        this._openConfirm({
+          title: "🗑 Delete Journal Entry",
+          message: "Delete this journal entry permanently?",
+          confirmLabel: "Delete Entry",
+          onConfirm: async () => {
+            await this._api.deleteLog(logId);
+            await this._refreshState();
+            this._showToast("Entry deleted");
+          },
+        });
       });
     });
 
@@ -1457,13 +1504,50 @@ class IGroPanel extends HTMLElement {
       this._showToast("Cover photo updated!");
     });
 
-    root.querySelector("[data-delete-photo]")?.addEventListener("click", async (e) => {
+    root.querySelector("[data-delete-photo]")?.addEventListener("click", (e) => {
       const photoId = e.currentTarget.dataset.deletePhoto;
-      if (confirm("Delete this photo permanently?")) {
-        await this._api.deletePhoto(photoId);
+      this._openConfirm({
+        title: "🗑 Delete Photo",
+        message: "Delete this photo permanently from your grow journal?",
+        confirmLabel: "Delete Photo",
+        onConfirm: async () => {
+          await this._api.deletePhoto(photoId);
+          await this._refreshState();
+          this._showToast("Photo deleted");
+        },
+      });
+    });
+
+    // Stage transition modal submit
+    root.getElementById("stage-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const notes = (fd.get("notes") || "").trim() || null;
+      const pickedDate = (fd.get("changed_at") || "").trim();
+      const todayDefault = fd.get("today_default") || "";
+      const changedAt = pickedDate && pickedDate !== todayDefault ? pickedDate : null;
+      const { plant, targetStage } = this._modal.data;
+      try {
+        await this._api.setPlantStage(plant.id, targetStage, notes, changedAt);
         this._modal = null;
         await this._refreshState();
-        this._showToast("Photo deleted");
+        this._showToast(`Moved ${plant.name} to ${STAGE_META[targetStage]?.label || targetStage}`);
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Confirmation modal action
+    root.getElementById("confirm-modal-ok")?.addEventListener("click", async () => {
+      const fn = this._modal?.data?.onConfirm;
+      this._modal = null;
+      this._render();
+      if (typeof fn === "function") {
+        try {
+          await fn();
+        } catch (err) {
+          this._showToast(`Error: ${err.message || err}`, true);
+        }
       }
     });
   }

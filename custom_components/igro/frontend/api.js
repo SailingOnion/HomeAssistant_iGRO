@@ -183,8 +183,10 @@ export class IGroApi {
     return this.hass.callWS({ type: "igro/plants/update", plant_id, data });
   }
 
-  async setPlantStage(plant_id, stage, notes = null) {
-    return this.hass.callWS({ type: "igro/plants/set_stage", plant_id, stage, notes });
+  async setPlantStage(plant_id, stage, notes = null, changed_at = null) {
+    const payload = { type: "igro/plants/set_stage", plant_id, stage, notes };
+    if (changed_at) payload.changed_at = changed_at;
+    return this.hass.callWS(payload);
   }
 
   async deletePlant(plant_id) {
