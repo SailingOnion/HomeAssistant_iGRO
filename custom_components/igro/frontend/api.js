@@ -113,11 +113,36 @@ export function formatDateTime(iso) {
   });
 }
 
+export function toLocalDatetimeInput(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  if (Number.isNaN(d.getTime())) return "";
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+export function fromLocalDatetimeInput(val) {
+  if (!val) return null;
+  const d = new Date(val);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
 export function formatRelative(iso) {
   if (!iso) return "Never";
-  const d = new Date(iso);
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso}T12:00:00` : iso;
+  const d = new Date(normalized);
   if (Number.isNaN(d.getTime())) return iso;
   const diffMs = Date.now() - d.getTime();
+  if (diffMs < -60000) {
+    const futMins = Math.ceil(-diffMs / 60000);
+    if (futMins < 60) return `In ${futMins}m`;
+    const futHrs = Math.ceil(futMins / 60);
+    if (futHrs < 24) return `In ${futHrs}h`;
+    const futDays = Math.ceil(futHrs / 24);
+    if (futDays === 1) return "Tomorrow";
+    if (futDays < 30) return `In ${futDays}d`;
+    return formatDate(iso);
+  }
   const mins = Math.floor(diffMs / 60000);
   if (mins < 1) return "Just now";
   if (mins < 60) return `${mins}m ago`;
@@ -201,8 +226,57 @@ export class IGroApi {
     return this.hass.callWS({ type: "igro/logs/create", data });
   }
 
+  async updateLog(log_id, data) {
+    return this.hass.callWS({ type: "igro/logs/update", log_id, data });
+  }
+
+  async completeLog(log_id, data = {}) {
+    return this.hass.callWS({ type: "igro/logs/complete", log_id, data });
+  }
+
   async deleteLog(log_id) {
     return this.hass.callWS({ type: "igro/logs/delete", log_id });
+  }
+
+  async addStageHistory(plant_id, stage, started_at, notes = null) {
+    return this.hass.callWS({
+      type: "igro/stage_history/add",
+      plant_id,
+      stage,
+      started_at,
+      notes,
+    });
+  }
+
+  async updateStageHistory(history_id, data) {
+    return this.hass.callWS({
+      type: "igro/stage_history/update",
+      history_id,
+      data,
+    });
+  }
+
+  async deleteStageHistory(history_id) {
+    return this.hass.callWS({ type: "igro/stage_history/delete", history_id });
+  }
+
+  async scheduleStageChange(plant_id, target_stage, scheduled_for, auto_apply = true, notes = null) {
+    return this.hass.callWS({
+      type: "igro/stage_schedule/create",
+      plant_id,
+      target_stage,
+      scheduled_for,
+      auto_apply,
+      notes,
+    });
+  }
+
+  async applyScheduledStageChange(schedule_id) {
+    return this.hass.callWS({ type: "igro/stage_schedule/apply", schedule_id });
+  }
+
+  async cancelScheduledStageChange(schedule_id) {
+    return this.hass.callWS({ type: "igro/stage_schedule/cancel", schedule_id });
   }
 
   async listPhotos(filters = {}) {

@@ -8,6 +8,7 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 import voluptuous as vol
 
+from .calculations import is_timestamp_in_future, is_timestamp_near_now
 from .const import (
     DOMAIN,
     ENVIRONMENT_TYPES,
@@ -46,7 +47,15 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_delete_plant,
         ws_list_logs,
         ws_create_log,
+        ws_update_log,
+        ws_complete_log,
         ws_delete_log,
+        ws_add_stage_history,
+        ws_update_stage_history,
+        ws_delete_stage_history,
+        ws_schedule_stage_change,
+        ws_apply_scheduled_stage_change,
+        ws_cancel_scheduled_stage_change,
         ws_list_photos,
         ws_capture_camera_photo,
         ws_delete_photo,
@@ -83,6 +92,8 @@ async def ws_get_state(
             "environments": list(data.get("environments", {}).values()),
             "plants": list(data.get("plants", {}).values()),
             "recent_logs": data.get("recent_logs", []),
+            "planned_logs": data.get("planned_logs", []),
+            "scheduled_stage_changes": data.get("scheduled_stage_changes", []),
             "recent_photos": data.get("recent_photos", []),
             "nutrient_presets": data.get("nutrient_presets", []),
             "summary": data.get("summary", {}),
@@ -354,6 +365,7 @@ async def ws_delete_plant(
         vol.Optional("plant_id"): vol.Any(str, None),
         vol.Optional("environment_id"): vol.Any(str, None),
         vol.Optional("log_type"): vol.Any(str, None),
+        vol.Optional("status"): vol.Any(str, None),
         vol.Optional("limit", default=100): int,
         vol.Optional("offset", default=0): int,
     }
@@ -373,6 +385,7 @@ async def ws_list_logs(
         plant_id=msg.get("plant_id"),
         environment_id=msg.get("environment_id"),
         log_type=msg.get("log_type"),
+        status=msg.get("status"),
         limit=msg.get("limit", 100),
         offset=msg.get("offset", 0),
     )
@@ -407,19 +420,25 @@ async def ws_create_log(
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    """Create a journal log entry, capturing current environment readings if omitted."""
+    """Create a journal log entry, snapshotting live climate only when near now."""
     coordinator = _get_coordinator(hass)
     if coordinator is None:
         connection.send_error(msg["id"], "not_ready", "iGro not initialized")
         return
 
     payload = dict(msg["data"])
-    env_readings = coordinator.get_environment_readings_for_plant(
-        payload.get("plant_id")
+    logged_at = payload.get("logged_at")
+    status = payload.get("status")
+    is_planned = status == "planned" or (
+        status is None and is_timestamp_in_future(logged_at)
     )
-    for k in ("temp_c", "humidity", "vpd_kpa"):
-        if payload.get(k) is None and env_readings.get(k) is not None:
-            payload[k] = env_readings[k]
+    if not is_planned and is_timestamp_near_now(logged_at):
+        env_readings = coordinator.get_environment_readings_for_plant(
+            payload.get("plant_id")
+        )
+        for k in ("temp_c", "humidity", "vpd_kpa"):
+            if payload.get(k) is None and env_readings.get(k) is not None:
+                payload[k] = env_readings[k]
 
     created = await coordinator.db.async_create_log(payload)
     hass.bus.async_fire(
@@ -428,10 +447,65 @@ async def ws_create_log(
             "log_id": created["id"],
             "plant_id": created.get("plant_id"),
             "log_type": created.get("log_type"),
+            "status": created.get("status"),
         },
     )
     await coordinator.async_request_refresh()
     connection.send_result(msg["id"], {"log": created})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/logs/update",
+        vol.Required("log_id"): str,
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_update_log(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update an existing journal log entry."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    updated = await coordinator.db.async_update_log(msg["log_id"], msg["data"])
+    if updated is None:
+        connection.send_error(msg["id"], "not_found", "Log entry not found")
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"log": updated})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/logs/complete",
+        vol.Required("log_id"): str,
+        vol.Optional("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_complete_log(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Mark a planned journal entry as completed."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    updated = await coordinator.db.async_complete_log(
+        msg["log_id"], msg.get("data")
+    )
+    if updated is None:
+        connection.send_error(msg["id"], "not_found", "Log entry not found")
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"log": updated})
 
 
 @websocket_api.websocket_command(
@@ -454,6 +528,180 @@ async def ws_delete_log(
     deleted = await coordinator.db.async_delete_log(msg["log_id"])
     await coordinator.async_request_refresh()
     connection.send_result(msg["id"], {"deleted": deleted})
+
+
+# ------------------------------------------------------------------
+# Stage History & Scheduled Stage Change WS commands
+# ------------------------------------------------------------------
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/stage_history/add",
+        vol.Required("plant_id"): str,
+        vol.Required("stage"): vol.In(GROW_STAGES),
+        vol.Required("started_at"): str,
+        vol.Optional("notes"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+async def ws_add_stage_history(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Add a retrospective stage history entry and recalculate timeline."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    created = await coordinator.db.async_add_stage_history(
+        msg["plant_id"], msg["stage"], msg["started_at"], msg.get("notes")
+    )
+    if created is None:
+        connection.send_error(msg["id"], "not_found", "Plant not found")
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"history": created})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/stage_history/update",
+        vol.Required("history_id"): str,
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_update_stage_history(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update a stage history entry's stage, date, or notes."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    updated = await coordinator.db.async_update_stage_history(
+        msg["history_id"], msg["data"]
+    )
+    if updated is None:
+        connection.send_error(msg["id"], "not_found", "Stage history entry not found")
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"history": updated})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/stage_history/delete",
+        vol.Required("history_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_stage_history(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete a stage history entry and recalculate timeline."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    try:
+        deleted = await coordinator.db.async_delete_stage_history(msg["history_id"])
+    except ValueError as err:
+        connection.send_error(msg["id"], "invalid_operation", str(err))
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"deleted": deleted})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/stage_schedule/create",
+        vol.Required("plant_id"): str,
+        vol.Required("target_stage"): vol.In(GROW_STAGES),
+        vol.Required("scheduled_for"): str,
+        vol.Optional("auto_apply", default=True): bool,
+        vol.Optional("notes"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+async def ws_schedule_stage_change(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Schedule a future stage transition for a plant."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    created = await coordinator.db.async_schedule_stage_change(
+        msg["plant_id"],
+        msg["target_stage"],
+        msg["scheduled_for"],
+        auto_apply=msg.get("auto_apply", True),
+        notes=msg.get("notes"),
+    )
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"schedule": created})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/stage_schedule/apply",
+        vol.Required("schedule_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_apply_scheduled_stage_change(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Apply a scheduled stage transition immediately."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    applied = await coordinator.db.async_apply_scheduled_stage_change(
+        msg["schedule_id"]
+    )
+    if applied is None:
+        connection.send_error(msg["id"], "not_found", "Scheduled transition not found")
+        return
+    hass.bus.async_fire(
+        EVENT_STAGE_CHANGED,
+        {"plant_id": applied["plant_id"], "stage": applied["stage"]},
+    )
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"applied": applied})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/stage_schedule/cancel",
+        vol.Required("schedule_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_cancel_scheduled_stage_change(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Cancel a pending scheduled stage transition."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    cancelled = await coordinator.db.async_cancel_scheduled_stage_change(
+        msg["schedule_id"]
+    )
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"cancelled": cancelled})
 
 
 # ------------------------------------------------------------------

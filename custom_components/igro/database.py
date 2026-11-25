@@ -17,6 +17,7 @@ import sqlite3
 from typing import Any
 import uuid
 
+from .calculations import is_timestamp_in_future, parse_iso_datetime
 from .const import (
     DEFAULT_LEAF_TEMP_OFFSET_C,
     GROW_STAGES,
@@ -24,7 +25,7 @@ from .const import (
     STAGE_GERMINATION,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def utc_now_iso() -> str:
@@ -180,9 +181,23 @@ class IGroDatabase:
                     temp_c REAL,
                     humidity REAL,
                     vpd_kpa REAL,
+                    status TEXT NOT NULL DEFAULT 'completed',
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (plant_id) REFERENCES plants(id) ON DELETE CASCADE,
                     FOREIGN KEY (environment_id) REFERENCES environments(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS scheduled_stage_changes (
+                    id TEXT PRIMARY KEY,
+                    plant_id TEXT NOT NULL,
+                    target_stage TEXT NOT NULL,
+                    scheduled_for TEXT NOT NULL,
+                    auto_apply INTEGER NOT NULL DEFAULT 1,
+                    notes TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL,
+                    applied_at TEXT,
+                    FOREIGN KEY (plant_id) REFERENCES plants(id) ON DELETE CASCADE
                 );
 
                 CREATE TABLE IF NOT EXISTS photos (
@@ -226,8 +241,17 @@ class IGroDatabase:
                 CREATE INDEX IF NOT EXISTS idx_photos_plant_taken ON photos(plant_id, taken_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_photos_taken ON photos(taken_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_presets_stage ON nutrient_presets(stage, week_start);
+                CREATE INDEX IF NOT EXISTS idx_sched_stage_pending ON scheduled_stage_changes(status, scheduled_for);
                 """
             )
+            # Safe additive migrations for pre-v3 databases
+            log_cols = {
+                r["name"] for r in conn.execute("PRAGMA table_info(logs)").fetchall()
+            }
+            if "status" not in log_cols:
+                conn.execute(
+                    "ALTER TABLE logs ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'"
+                )
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
@@ -263,7 +287,31 @@ class IGroDatabase:
             recent_logs = [
                 _deserialize_log(r)
                 for r in conn.execute(
-                    "SELECT * FROM logs ORDER BY logged_at DESC, created_at DESC LIMIT 60"
+                    """
+                    SELECT * FROM logs
+                    WHERE status = 'completed'
+                    ORDER BY logged_at DESC, created_at DESC LIMIT 60
+                    """
+                ).fetchall()
+            ]
+            planned_logs = [
+                _deserialize_log(r)
+                for r in conn.execute(
+                    """
+                    SELECT * FROM logs
+                    WHERE status = 'planned'
+                    ORDER BY logged_at ASC, created_at ASC LIMIT 60
+                    """
+                ).fetchall()
+            ]
+            scheduled_stage_changes = [
+                dict(r)
+                for r in conn.execute(
+                    """
+                    SELECT * FROM scheduled_stage_changes
+                    WHERE status = 'pending'
+                    ORDER BY scheduled_for ASC
+                    """
                 ).fetchall()
             ]
             recent_photos = [
@@ -282,7 +330,7 @@ class IGroDatabase:
                 ).fetchall()
             ]
 
-            # Per-plant aggregates
+            # Per-plant aggregates (completed logs only — planned future entries excluded)
             plant_stats: dict[str, dict[str, Any]] = {}
             for p in plants:
                 pid = p["id"]
@@ -290,7 +338,8 @@ class IGroDatabase:
                     """
                     SELECT logged_at, water_volume_ml, ph, ec
                     FROM logs
-                    WHERE plant_id = ? AND log_type IN ('water', 'feed', 'flush')
+                    WHERE plant_id = ? AND status = 'completed'
+                      AND log_type IN ('water', 'feed', 'flush')
                     ORDER BY logged_at DESC LIMIT 1
                     """,
                     (pid,),
@@ -299,7 +348,7 @@ class IGroDatabase:
                     """
                     SELECT logged_at, ph, ec, ppm
                     FROM logs
-                    WHERE plant_id = ? AND log_type = 'feed'
+                    WHERE plant_id = ? AND status = 'completed' AND log_type = 'feed'
                     ORDER BY logged_at DESC LIMIT 1
                     """,
                     (pid,),
@@ -308,7 +357,8 @@ class IGroDatabase:
                     """
                     SELECT ph, ec, ppm, logged_at
                     FROM logs
-                    WHERE plant_id = ? AND (ph IS NOT NULL OR ec IS NOT NULL)
+                    WHERE plant_id = ? AND status = 'completed'
+                      AND (ph IS NOT NULL OR ec IS NOT NULL)
                     ORDER BY logged_at DESC LIMIT 1
                     """,
                     (pid,),
@@ -317,13 +367,19 @@ class IGroDatabase:
                     """
                     SELECT height_cm, logged_at
                     FROM logs
-                    WHERE plant_id = ? AND height_cm IS NOT NULL
+                    WHERE plant_id = ? AND status = 'completed'
+                      AND height_cm IS NOT NULL
                     ORDER BY logged_at DESC LIMIT 1
                     """,
                     (pid,),
                 ).fetchone()
                 log_count = conn.execute(
-                    "SELECT COUNT(*) FROM logs WHERE plant_id = ?", (pid,)
+                    "SELECT COUNT(*) FROM logs WHERE plant_id = ? AND status = 'completed'",
+                    (pid,),
+                ).fetchone()[0]
+                planned_log_count = conn.execute(
+                    "SELECT COUNT(*) FROM logs WHERE plant_id = ? AND status = 'planned'",
+                    (pid,),
                 ).fetchone()[0]
                 photo_count = conn.execute(
                     "SELECT COUNT(*) FROM photos WHERE plant_id = ?", (pid,)
@@ -362,11 +418,14 @@ class IGroDatabase:
                         last_height["height_cm"] if last_height else None
                     ),
                     "log_count": log_count,
+                    "planned_log_count": planned_log_count,
                     "photo_count": photo_count,
                     "cover_photo": cover_photo,
                 }
 
-            total_logs = conn.execute("SELECT COUNT(*) FROM logs").fetchone()[0]
+            total_logs = conn.execute(
+                "SELECT COUNT(*) FROM logs WHERE status = 'completed'"
+            ).fetchone()[0]
             total_photos = conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
 
             return {
@@ -375,6 +434,8 @@ class IGroDatabase:
                 "stage_history": stage_rows,
                 "plant_stats": plant_stats,
                 "recent_logs": recent_logs,
+                "planned_logs": planned_logs,
+                "scheduled_stage_changes": scheduled_stage_changes,
                 "recent_photos": recent_photos,
                 "nutrient_presets": nutrient_presets,
                 "totals": {
@@ -633,6 +694,42 @@ class IGroDatabase:
             self._set_plant_stage_sync, plant_id, stage, notes, changed_at
         )
 
+    def _recalculate_plant_stage_from_history(
+        self, conn: sqlite3.Connection, plant_id: str
+    ) -> dict[str, Any] | None:
+        """Sort stage_history chronologically, chain ended_at, and sync plant.stage."""
+        rows = conn.execute(
+            "SELECT * FROM stage_history WHERE plant_id = ?", (plant_id,)
+        ).fetchall()
+        if not rows:
+            row = conn.execute("SELECT * FROM plants WHERE id = ?", (plant_id,)).fetchone()
+            return _row_to_dict(row)
+
+        def _sort_key(r: sqlite3.Row) -> tuple[float, str]:
+            dt = parse_iso_datetime(r["started_at"])
+            return (dt.timestamp() if dt else 0.0, r["id"])
+
+        ordered = sorted(rows, key=_sort_key)
+        for idx, item in enumerate(ordered):
+            next_start = ordered[idx + 1]["started_at"] if idx + 1 < len(ordered) else None
+            if item["ended_at"] != next_start:
+                conn.execute(
+                    "UPDATE stage_history SET ended_at = ? WHERE id = ?",
+                    (next_start, item["id"]),
+                )
+
+        latest = ordered[-1]
+        conn.execute(
+            """
+            UPDATE plants
+            SET stage = ?, stage_started_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (latest["stage"], latest["started_at"], utc_now_iso(), plant_id),
+        )
+        row = conn.execute("SELECT * FROM plants WHERE id = ?", (plant_id,)).fetchone()
+        return _row_to_dict(row)
+
     def _set_stage_in_conn(
         self,
         conn: sqlite3.Connection,
@@ -647,43 +744,27 @@ class IGroDatabase:
         if not existing:
             return None
 
-        now = changed_at or utc_now_iso()
+        when = changed_at or utc_now_iso()
         old_stage = existing["stage"]
-        if old_stage == stage:
+        if old_stage == stage and not changed_at:
             return dict(existing)
 
-        # Close open stage_history entry
-        conn.execute(
-            """
-            UPDATE stage_history
-            SET ended_at = ?
-            WHERE plant_id = ? AND ended_at IS NULL
-            """,
-            (now, plant_id),
-        )
-        # Insert new stage_history entry
+        # Insert stage_history entry and chronologically recalculate chain
         conn.execute(
             """
             INSERT INTO stage_history (id, plant_id, stage, started_at, notes)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (uuid.uuid4().hex[:12], plant_id, stage, now, notes),
+            (uuid.uuid4().hex[:12], plant_id, stage, when, notes),
         )
-        # Update plant row
-        conn.execute(
-            """
-            UPDATE plants
-            SET stage = ?, stage_started_at = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (stage, now, utc_now_iso(), plant_id),
-        )
+        updated = self._recalculate_plant_stage_from_history(conn, plant_id)
+
         # Automatically add a journal entry for the stage transition
         conn.execute(
             """
             INSERT INTO logs (
-                id, plant_id, environment_id, log_type, title, notes, logged_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                id, plant_id, environment_id, log_type, title, notes, logged_at, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', ?)
             """,
             (
                 uuid.uuid4().hex[:12],
@@ -692,12 +773,254 @@ class IGroDatabase:
                 LOG_TYPE_STAGE_CHANGE,
                 f"Stage changed: {old_stage.title()} → {stage.title()}",
                 notes,
-                now,
+                when,
                 utc_now_iso(),
             ),
         )
-        row = conn.execute("SELECT * FROM plants WHERE id = ?", (plant_id,)).fetchone()
-        return _row_to_dict(row)
+        return updated
+
+    # ------------------------------------------------------------------
+    # Retrospective Stage History CRUD
+    # ------------------------------------------------------------------
+    async def async_add_stage_history(
+        self,
+        plant_id: str,
+        stage: str,
+        started_at: str,
+        notes: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Insert a retrospective stage history entry and recalculate timeline."""
+        if stage not in GROW_STAGES:
+            raise ValueError(f"Invalid grow stage: {stage}")
+        return await self._run(
+            self._add_stage_history_sync, plant_id, stage, started_at, notes
+        )
+
+    def _add_stage_history_sync(
+        self, plant_id: str, stage: str, started_at: str, notes: str | None
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM plants WHERE id = ?", (plant_id,)
+            ).fetchone()
+            if not existing:
+                return None
+            hist_id = uuid.uuid4().hex[:12]
+            conn.execute(
+                """
+                INSERT INTO stage_history (id, plant_id, stage, started_at, notes)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (hist_id, plant_id, stage, started_at, notes),
+            )
+            self._recalculate_plant_stage_from_history(conn, plant_id)
+            row = conn.execute(
+                "SELECT * FROM stage_history WHERE id = ?", (hist_id,)
+            ).fetchone()
+            return _row_to_dict(row)
+
+    async def async_update_stage_history(
+        self, history_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Update a stage history entry and recalculate the plant's stage chain."""
+        return await self._run(self._update_stage_history_sync, history_id, data)
+
+    def _update_stage_history_sync(
+        self, history_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM stage_history WHERE id = ?", (history_id,)
+            ).fetchone()
+            if not existing:
+                return None
+
+            updates: dict[str, Any] = {}
+            if "stage" in data and data["stage"] in GROW_STAGES:
+                updates["stage"] = data["stage"]
+            if "started_at" in data and data["started_at"]:
+                updates["started_at"] = data["started_at"]
+            if "notes" in data:
+                updates["notes"] = data["notes"] or None
+
+            if updates:
+                set_clause = ", ".join(f"{k} = ?" for k in updates)
+                conn.execute(
+                    f"UPDATE stage_history SET {set_clause} WHERE id = ?",
+                    [*updates.values(), history_id],
+                )
+                self._recalculate_plant_stage_from_history(conn, existing["plant_id"])
+
+            row = conn.execute(
+                "SELECT * FROM stage_history WHERE id = ?", (history_id,)
+            ).fetchone()
+            return _row_to_dict(row)
+
+    async def async_delete_stage_history(self, history_id: str) -> bool:
+        """Delete a stage history entry (if >1 remains) and recalculate timeline."""
+        return await self._run(self._delete_stage_history_sync, history_id)
+
+    def _delete_stage_history_sync(self, history_id: str) -> bool:
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT plant_id FROM stage_history WHERE id = ?", (history_id,)
+            ).fetchone()
+            if not existing:
+                return False
+            plant_id = existing["plant_id"]
+            count = conn.execute(
+                "SELECT COUNT(*) FROM stage_history WHERE plant_id = ?", (plant_id,)
+            ).fetchone()[0]
+            if count <= 1:
+                raise ValueError("Cannot delete the only stage history entry for a plant")
+            conn.execute("DELETE FROM stage_history WHERE id = ?", (history_id,))
+            self._recalculate_plant_stage_from_history(conn, plant_id)
+            return True
+
+    # ------------------------------------------------------------------
+    # Scheduled Future Stage Changes CRUD & Auto-Apply
+    # ------------------------------------------------------------------
+    async def async_schedule_stage_change(
+        self,
+        plant_id: str,
+        target_stage: str,
+        scheduled_for: str,
+        auto_apply: bool = True,
+        notes: str | None = None,
+    ) -> dict[str, Any]:
+        """Schedule a future stage transition for a plant."""
+        if target_stage not in GROW_STAGES:
+            raise ValueError(f"Invalid grow stage: {target_stage}")
+        return await self._run(
+            self._schedule_stage_change_sync,
+            plant_id,
+            target_stage,
+            scheduled_for,
+            auto_apply,
+            notes,
+        )
+
+    def _schedule_stage_change_sync(
+        self,
+        plant_id: str,
+        target_stage: str,
+        scheduled_for: str,
+        auto_apply: bool,
+        notes: str | None,
+    ) -> dict[str, Any]:
+        sched_id = uuid.uuid4().hex[:12]
+        now = utc_now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO scheduled_stage_changes (
+                    id, plant_id, target_stage, scheduled_for, auto_apply, notes, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+                """,
+                (
+                    sched_id,
+                    plant_id,
+                    target_stage,
+                    scheduled_for,
+                    1 if auto_apply else 0,
+                    notes,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM scheduled_stage_changes WHERE id = ?", (sched_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_cancel_scheduled_stage_change(self, schedule_id: str) -> bool:
+        """Cancel a pending scheduled stage change."""
+        return await self._run(self._cancel_scheduled_stage_change_sync, schedule_id)
+
+    def _cancel_scheduled_stage_change_sync(self, schedule_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE scheduled_stage_changes SET status = 'cancelled' WHERE id = ? AND status = 'pending'",
+                (schedule_id,),
+            )
+            return cur.rowcount > 0
+
+    async def async_apply_scheduled_stage_change(
+        self, schedule_id: str
+    ) -> dict[str, Any] | None:
+        """Apply a pending scheduled stage change immediately."""
+        return await self._run(self._apply_scheduled_stage_change_sync, schedule_id)
+
+    def _apply_scheduled_stage_change_sync(
+        self, schedule_id: str
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM scheduled_stage_changes WHERE id = ? AND status = 'pending'",
+                (schedule_id,),
+            ).fetchone()
+            if not row:
+                return None
+            now = utc_now_iso()
+            self._set_stage_in_conn(
+                conn,
+                row["plant_id"],
+                row["target_stage"],
+                notes=row["notes"],
+                changed_at=now,
+            )
+            conn.execute(
+                "UPDATE scheduled_stage_changes SET status = 'applied', applied_at = ? WHERE id = ?",
+                (now, schedule_id),
+            )
+            return {
+                "schedule_id": schedule_id,
+                "plant_id": row["plant_id"],
+                "stage": row["target_stage"],
+            }
+
+    async def async_process_due_stage_changes(
+        self, now_iso: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Auto-apply all pending scheduled stage changes whose scheduled_for <= now."""
+        return await self._run(self._process_due_stage_changes_sync, now_iso)
+
+    def _process_due_stage_changes_sync(
+        self, now_iso: str | None
+    ) -> list[dict[str, Any]]:
+        now_dt = parse_iso_datetime(now_iso) or datetime.now(UTC)
+        now_str = now_dt.replace(microsecond=0).isoformat()
+        applied: list[dict[str, Any]] = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM scheduled_stage_changes
+                WHERE status = 'pending' AND auto_apply = 1
+                ORDER BY scheduled_for ASC
+                """
+            ).fetchall()
+            for row in rows:
+                sched_dt = parse_iso_datetime(row["scheduled_for"])
+                if sched_dt is None or sched_dt > now_dt:
+                    continue
+                self._set_stage_in_conn(
+                    conn,
+                    row["plant_id"],
+                    row["target_stage"],
+                    notes=row["notes"] or "Scheduled stage transition",
+                    changed_at=row["scheduled_for"],
+                )
+                conn.execute(
+                    "UPDATE scheduled_stage_changes SET status = 'applied', applied_at = ? WHERE id = ?",
+                    (now_str, row["id"]),
+                )
+                applied.append(
+                    {
+                        "schedule_id": row["id"],
+                        "plant_id": row["plant_id"],
+                        "stage": row["target_stage"],
+                    }
+                )
+        return applied
 
     def _set_plant_stage_sync(
         self,
@@ -732,6 +1055,10 @@ class IGroDatabase:
     def _create_log_sync(self, data: dict[str, Any]) -> dict[str, Any]:
         log_id = data.get("id") or uuid.uuid4().hex[:12]
         now = utc_now_iso()
+        logged_at = data.get("logged_at") or now
+        status = data.get("status")
+        if status not in ("completed", "planned"):
+            status = "planned" if is_timestamp_in_future(logged_at) else "completed"
         nutrients = data.get("nutrients")
         nutrients_json = json.dumps(nutrients) if nutrients else None
 
@@ -742,7 +1069,7 @@ class IGroDatabase:
             "log_type": data.get("log_type") or "note",
             "title": data.get("title") or None,
             "notes": data.get("notes") or None,
-            "logged_at": data.get("logged_at") or now,
+            "logged_at": logged_at,
             "water_volume_ml": data.get("water_volume_ml"),
             "ph": data.get("ph"),
             "ec": data.get("ec"),
@@ -756,6 +1083,7 @@ class IGroDatabase:
             "temp_c": data.get("temp_c"),
             "humidity": data.get("humidity"),
             "vpd_kpa": data.get("vpd_kpa"),
+            "status": status,
             "created_at": now,
         }
         cols = ", ".join(record.keys())
@@ -778,17 +1106,100 @@ class IGroDatabase:
             ).fetchone()
             return _deserialize_log(created)
 
+    async def async_update_log(
+        self, log_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Update an existing journal log entry (retrospective edit or rescheduling)."""
+        return await self._run(self._update_log_sync, log_id, data)
+
+    def _update_log_sync(
+        self, log_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        allowed = {
+            "plant_id",
+            "environment_id",
+            "log_type",
+            "title",
+            "notes",
+            "logged_at",
+            "water_volume_ml",
+            "ph",
+            "ec",
+            "ppm",
+            "runoff_ph",
+            "runoff_ec",
+            "water_temp_c",
+            "height_cm",
+            "training_method",
+            "status",
+        }
+        updates: dict[str, Any] = {k: v for k, v in data.items() if k in allowed}
+        if "log_type" in updates and not updates["log_type"]:
+            updates.pop("log_type")
+        if "logged_at" in updates and not updates["logged_at"]:
+            updates.pop("logged_at")
+        if "status" in updates and updates["status"] not in ("completed", "planned"):
+            updates.pop("status")
+        if "nutrients" in data:
+            nuts = data.get("nutrients")
+            updates["nutrients_json"] = json.dumps(nuts) if nuts else None
+
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM logs WHERE id = ?", (log_id,)
+            ).fetchone()
+            if not existing:
+                return None
+            if updates:
+                set_clause = ", ".join(f"{k} = ?" for k in updates)
+                conn.execute(
+                    f"UPDATE logs SET {set_clause} WHERE id = ?",
+                    [*updates.values(), log_id],
+                )
+            row = conn.execute("SELECT * FROM logs WHERE id = ?", (log_id,)).fetchone()
+            return _deserialize_log(row) if row else None
+
+    async def async_complete_log(
+        self, log_id: str, overrides: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        """Mark a planned journal entry as completed, applying optional overrides."""
+        return await self._run(self._complete_log_sync, log_id, overrides or {})
+
+    def _complete_log_sync(
+        self, log_id: str, overrides: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM logs WHERE id = ?", (log_id,)
+            ).fetchone()
+            if not existing:
+                return None
+            data = dict(overrides)
+            data["status"] = "completed"
+            if not data.get("logged_at") and is_timestamp_in_future(
+                existing["logged_at"]
+            ):
+                data["logged_at"] = utc_now_iso()
+        return self._update_log_sync(log_id, data)
+
     async def async_list_logs(
         self,
         plant_id: str | None = None,
         environment_id: str | None = None,
         log_type: str | None = None,
+        status: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Query journal logs with optional filters."""
         return await self._run(
-            self._list_logs_sync, plant_id, environment_id, log_type, limit, offset
+            self._list_logs_sync,
+            plant_id,
+            environment_id,
+            log_type,
+            status,
+            limit,
+            offset,
         )
 
     def _list_logs_sync(
@@ -796,6 +1207,7 @@ class IGroDatabase:
         plant_id: str | None,
         environment_id: str | None,
         log_type: str | None,
+        status: str | None,
         limit: int,
         offset: int,
     ) -> list[dict[str, Any]]:
@@ -810,6 +1222,9 @@ class IGroDatabase:
         if log_type:
             clauses.append("log_type = ?")
             params.append(log_type)
+        if status in ("completed", "planned"):
+            clauses.append("status = ?")
+            params.append(status)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.extend([max(1, min(limit, 500)), max(0, offset)])
         with self._connect() as conn:

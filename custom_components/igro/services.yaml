@@ -81,10 +81,24 @@ log_action:
       example: "Veg Week 3 Base"
       selector:
         text:
+    logged_at:
+      name: Date & Time (ISO-8601)
+      description: Optional past (backdated) or future (scheduled) date/time. Defaults to now.
+      example: "2026-11-20T18:00:00Z"
+      selector:
+        text:
+    status:
+      name: Status
+      description: Mark as completed or planned (auto-detected from future date if omitted).
+      selector:
+        select:
+          options:
+            - completed
+            - planned
 
 set_stage:
   name: Set plant stage
-  description: Transition a plant to a specific grow lifecycle stage.
+  description: Transition a plant to a specific grow lifecycle stage (supports past backdating or future scheduling).
   fields:
     plant:
       name: Plant
@@ -110,6 +124,18 @@ set_stage:
       name: Notes
       selector:
         text:
+    changed_at:
+      name: Transition Date (ISO-8601)
+      description: Optional past date to backdate or future date to schedule the stage change.
+      example: "2026-12-01"
+      selector:
+        text:
+    auto_apply:
+      name: Auto-apply when due
+      description: When scheduling a future date, automatically transition the plant when the date arrives.
+      default: true
+      selector:
+        boolean:
 
 advance_stage:
   name: Advance plant stage
