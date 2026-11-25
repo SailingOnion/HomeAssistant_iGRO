@@ -39,16 +39,21 @@
 
 ## 📦 Installation
 
-### Option 1: HACS (Recommended)
-1. Open **HACS** in Home Assistant.
+### Option 1: Home Assistant Marketplace (HA 2026.11+, Recommended)
+*(Make sure the GitHub repository is **Public** — Marketplace custom repositories require public repos.)*
+1. In Home Assistant, go to **Settings → Marketplace** (accept the community notice if opening for the first time).
 2. Click the three-dot menu (`⋮`) in the top right → **Custom repositories**.
-3. Add this repository URL with category **Integration**.
-4. Search for **iGro** in HACS and click **Download**.
-5. Restart Home Assistant.
-6. Go to **Settings → Devices & Services → + Add Integration** and search for **iGro**.
+3. Sign in with GitHub if prompted.
+4. Add `https://github.com/SailingOnion/HomeAssistant_iGRO` with type **Integration**.
+5. Search for **iGro** in Marketplace and click **Install**.
+6. Restart Home Assistant.
+7. Go to **Settings → Devices & Services → + Add Integration** and search for **iGro**.
+
+*(On Home Assistant 2026.10 or earlier, use **HACS → ⋮ → Custom repositories** with the same URL and category **Integration**.)*
 
 ### Option 2: Manual Installation
 1. Copy `custom_components/igro` into your Home Assistant `/config/custom_components/igro` directory.
+   > **Note:** `local_apps` is for containerized **Apps** (formerly Add-ons). Custom Python integrations like iGro still go inside `/config/custom_components/`.
 2. Restart Home Assistant.
 3. Go to **Settings → Devices & Services → + Add Integration → iGro**.
 
