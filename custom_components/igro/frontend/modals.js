@@ -9,7 +9,7 @@ import {
   escapeHtml,
   formatDateTime,
   stageBadgeHtml,
-} from "./api.js";
+} from "./api.js?v=0.1.1";
 
 function entityOptionsHtml(entities = [], selected = "", placeholder = "None") {
   const opts = [`<option value="">${escapeHtml(placeholder)}</option>`];

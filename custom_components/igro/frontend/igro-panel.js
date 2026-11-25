@@ -14,15 +14,15 @@ import {
   formatTemp,
   stageBadgeHtml,
   vpdBadgeHtml,
-} from "./api.js";
+} from "./api.js?v=0.1.1";
 import {
   renderEnvironmentModal,
   renderLightboxModal,
   renderLogModal,
   renderPhotoModal,
   renderPlantModal,
-} from "./modals.js";
-import { PANEL_STYLES } from "./styles.js";
+} from "./modals.js?v=0.1.1";
+import { PANEL_STYLES } from "./styles.js?v=0.1.1";
 
 class IGroPanel extends HTMLElement {
   constructor() {
@@ -578,9 +578,10 @@ class IGroPanel extends HTMLElement {
                 ${escapeHtml([(env.env_type || "tent").replace("_", " "), env.dimensions, env.light_schedule ? `☀️ ${env.light_schedule}` : ""].filter(Boolean).join(" · "))}
               </div>
             </div>
-            <div style="display:flex;gap:6px;align-items:center;">
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">
               ${vpdBadgeHtml(env)}
-              ${!compact ? `<button class="btn btn-sm" data-edit-env="${escapeHtml(env.id)}">✏️</button><button class="btn btn-sm btn-danger" data-delete-env="${escapeHtml(env.id)}">🗑</button>` : ""}
+              <button class="btn btn-sm" data-edit-env="${escapeHtml(env.id)}" title="Edit environment">✏️ Edit</button>
+              ${!compact ? `<button class="btn btn-sm btn-danger" data-delete-env="${escapeHtml(env.id)}" title="Delete environment">🗑</button>` : ""}
             </div>
           </div>
 
@@ -886,9 +887,11 @@ class IGroPanel extends HTMLElement {
 
     // Environment actions
     root.querySelectorAll("[data-edit-env]").forEach((el) => {
-      el.addEventListener("click", async () => {
+      el.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const envId = el.dataset.editEnv;
         await this._refreshHaEntities();
-        const env = (this._state.environments || []).find((e) => e.id === el.dataset.editEnv);
+        const env = (this._state.environments || []).find((item) => item.id === envId);
         if (env) {
           this._modal = { type: "env", data: env };
           this._render();
@@ -897,8 +900,10 @@ class IGroPanel extends HTMLElement {
     });
 
     root.querySelectorAll("[data-delete-env]").forEach((el) => {
-      el.addEventListener("click", async () => {
-        const env = (this._state.environments || []).find((e) => e.id === el.dataset.deleteEnv);
+      el.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const envId = el.dataset.deleteEnv;
+        const env = (this._state.environments || []).find((item) => item.id === envId);
         if (env && confirm(`Delete environment "${env.name}"? Plants inside will become unassigned.`)) {
           await this._api.deleteEnvironment(env.id);
           await this._refreshState();

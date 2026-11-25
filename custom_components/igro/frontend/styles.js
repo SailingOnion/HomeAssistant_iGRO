@@ -737,6 +737,15 @@ export const PANEL_STYLES = `
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
+}
+
+.modal > form {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .modal-title {
@@ -746,6 +755,8 @@ export const PANEL_STYLES = `
 }
 
 .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 18px 20px;
   overflow-y: auto;
   display: flex;
@@ -759,6 +770,7 @@ export const PANEL_STYLES = `
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+  flex-shrink: 0;
 }
 
 .form-grid {
