@@ -9,7 +9,7 @@ to avoid recorder lock contention or schema conflicts.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 import secrets
@@ -22,10 +22,11 @@ from .const import (
     DEFAULT_LEAF_TEMP_OFFSET_C,
     GROW_STAGES,
     LOG_TYPE_STAGE_CHANGE,
+    LOG_TYPES,
     STAGE_GERMINATION,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def utc_now_iso() -> str:
@@ -281,6 +282,28 @@ class IGroDatabase:
                     FOREIGN KEY (harvest_id) REFERENCES harvests(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id TEXT PRIMARY KEY,
+                    plant_id TEXT,
+                    environment_id TEXT,
+                    title TEXT NOT NULL,
+                    action_type TEXT NOT NULL DEFAULT 'water',
+                    due_at TEXT NOT NULL,
+                    recurrence_days INTEGER,
+                    moisture_threshold REAL,
+                    auto_log_on_complete INTEGER NOT NULL DEFAULT 1,
+                    preset_id TEXT,
+                    notes TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    last_completed_at TEXT,
+                    last_notified_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (plant_id) REFERENCES plants(id) ON DELETE CASCADE,
+                    FOREIGN KEY (environment_id) REFERENCES environments(id) ON DELETE SET NULL,
+                    FOREIGN KEY (preset_id) REFERENCES nutrient_presets(id) ON DELETE SET NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_plants_env ON plants(environment_id);
                 CREATE INDEX IF NOT EXISTS idx_stage_history_plant ON stage_history(plant_id, started_at);
                 CREATE INDEX IF NOT EXISTS idx_logs_plant_logged ON logs(plant_id, logged_at DESC);
@@ -292,6 +315,7 @@ class IGroDatabase:
                 CREATE INDEX IF NOT EXISTS idx_sched_stage_pending ON scheduled_stage_changes(status, scheduled_for);
                 CREATE INDEX IF NOT EXISTS idx_harvests_date ON harvests(harvested_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_curing_harvest ON curing_logs(harvest_id, logged_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, due_at ASC);
                 """
             )
             # Safe additive migrations for pre-v4 databases
@@ -408,6 +432,12 @@ class IGroDatabase:
                     "SELECT * FROM curing_logs ORDER BY logged_at DESC, created_at DESC"
                 ).fetchall()
             ]
+            reminders = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM reminders ORDER BY status ASC, due_at ASC, created_at ASC"
+                ).fetchall()
+            ]
 
             # Per-plant aggregates (completed logs only — planned future entries excluded)
             plant_stats: dict[str, dict[str, Any]] = {}
@@ -520,6 +550,7 @@ class IGroDatabase:
                 "grow_cycles": grow_cycles,
                 "harvests": harvests,
                 "curing_logs": curing_logs,
+                "reminders": reminders,
                 "totals": {
                     "logs": total_logs,
                     "photos": total_photos,
@@ -1930,3 +1961,292 @@ class IGroDatabase:
                 "harvest": harvest,
                 "curing_logs": curing_logs,
             }
+
+    # ------------------------------------------------------------------
+    # Reminders & Schedules CRUD
+    # ------------------------------------------------------------------
+    async def async_list_reminders(
+        self,
+        status: str | None = None,
+        plant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List reminders with optional status or plant filter."""
+        return await self._run(self._list_reminders_sync, status, plant_id)
+
+    def _list_reminders_sync(
+        self, status: str | None, plant_id: str | None
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if plant_id:
+            clauses.append("plant_id = ?")
+            params.append(plant_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM reminders {where} ORDER BY status ASC, due_at ASC",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    async def async_create_reminder(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create a recurring or one-time grow reminder."""
+        return await self._run(self._create_reminder_sync, data)
+
+    def _create_reminder_sync(self, data: dict[str, Any]) -> dict[str, Any]:
+        rem_id = data.get("id") or uuid.uuid4().hex[:12]
+        now = utc_now_iso()
+        rec_raw = data.get("recurrence_days")
+        rec_days = int(rec_raw) if rec_raw not in (None, "", 0, "0") else None
+        if rec_days is not None and rec_days <= 0:
+            rec_days = None
+
+        status = data.get("status") or "active"
+        if status not in ("active", "completed", "paused"):
+            status = "active"
+
+        record = {
+            "id": rem_id,
+            "plant_id": data.get("plant_id") or None,
+            "environment_id": data.get("environment_id") or None,
+            "title": (data.get("title") or "Grow Reminder").strip(),
+            "action_type": data.get("action_type") or "water",
+            "due_at": data.get("due_at") or now,
+            "recurrence_days": rec_days,
+            "moisture_threshold": (
+                float(data["moisture_threshold"])
+                if data.get("moisture_threshold") not in (None, "")
+                else None
+            ),
+            "auto_log_on_complete": 1 if data.get("auto_log_on_complete", True) else 0,
+            "preset_id": data.get("preset_id") or None,
+            "notes": data.get("notes") or None,
+            "status": status,
+            "last_completed_at": None,
+            "last_notified_at": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        with self._connect() as conn:
+            if record["plant_id"] and not record["environment_id"]:
+                prow = conn.execute(
+                    "SELECT environment_id FROM plants WHERE id = ?",
+                    (record["plant_id"],),
+                ).fetchone()
+                if prow:
+                    record["environment_id"] = prow["environment_id"]
+            cols = ", ".join(record.keys())
+            placeholders = ", ".join(["?"] * len(record))
+            conn.execute(
+                f"INSERT INTO reminders ({cols}) VALUES ({placeholders})",
+                list(record.values()),
+            )
+            row = conn.execute(
+                "SELECT * FROM reminders WHERE id = ?", (rem_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_update_reminder(
+        self, reminder_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Update an existing reminder."""
+        return await self._run(self._update_reminder_sync, reminder_id, data)
+
+    def _update_reminder_sync(
+        self, reminder_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        allowed = {
+            "plant_id",
+            "environment_id",
+            "title",
+            "action_type",
+            "due_at",
+            "recurrence_days",
+            "moisture_threshold",
+            "auto_log_on_complete",
+            "preset_id",
+            "notes",
+            "status",
+        }
+        updates: dict[str, Any] = {k: v for k, v in data.items() if k in allowed}
+        if "title" in updates and not updates["title"]:
+            updates.pop("title")
+        if "due_at" in updates and not updates["due_at"]:
+            updates.pop("due_at")
+        if "recurrence_days" in updates:
+            raw = updates["recurrence_days"]
+            updates["recurrence_days"] = (
+                int(raw) if raw not in (None, "", 0, "0") and int(raw) > 0 else None
+            )
+        if "moisture_threshold" in updates:
+            raw = updates["moisture_threshold"]
+            updates["moisture_threshold"] = (
+                float(raw) if raw not in (None, "") else None
+            )
+        if "auto_log_on_complete" in updates:
+            updates["auto_log_on_complete"] = (
+                1 if updates["auto_log_on_complete"] else 0
+            )
+        if "status" in updates and updates["status"] not in (
+            "active",
+            "completed",
+            "paused",
+        ):
+            updates.pop("status")
+        if "due_at" in updates:
+            updates["last_notified_at"] = None
+
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM reminders WHERE id = ?", (reminder_id,)
+            ).fetchone()
+            if not existing:
+                return None
+            if updates:
+                updates["updated_at"] = utc_now_iso()
+                set_clause = ", ".join(f"{k} = ?" for k in updates)
+                conn.execute(
+                    f"UPDATE reminders SET {set_clause} WHERE id = ?",
+                    [*updates.values(), reminder_id],
+                )
+            row = conn.execute(
+                "SELECT * FROM reminders WHERE id = ?", (reminder_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_complete_reminder(
+        self,
+        reminder_id: str,
+        create_log: bool | None = None,
+        now_iso: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Complete a reminder, advancing recurrence if repeating & optionally auto-logging."""
+        return await self._run(
+            self._complete_reminder_sync, reminder_id, create_log, now_iso
+        )
+
+    def _complete_reminder_sync(
+        self,
+        reminder_id: str,
+        create_log: bool | None,
+        now_iso: str | None,
+    ) -> dict[str, Any] | None:
+        now_dt = parse_iso_datetime(now_iso) or datetime.now(UTC)
+        now_str = now_dt.replace(microsecond=0).isoformat()
+
+        with self._connect() as conn:
+            rem = conn.execute(
+                "SELECT * FROM reminders WHERE id = ?", (reminder_id,)
+            ).fetchone()
+            if not rem:
+                return None
+
+            should_log = (
+                bool(create_log)
+                if create_log is not None
+                else bool(rem["auto_log_on_complete"])
+            )
+            created_log: dict[str, Any] | None = None
+            if should_log and rem["action_type"] in LOG_TYPES:
+                log_id = uuid.uuid4().hex[:12]
+                nutrients_json = None
+                ph = None
+                ec = None
+                ppm = None
+                if rem["preset_id"]:
+                    pr = conn.execute(
+                        "SELECT * FROM nutrient_presets WHERE id = ?",
+                        (rem["preset_id"],),
+                    ).fetchone()
+                    if pr:
+                        nutrients_json = pr["nutrients_json"]
+                        ph = pr["target_ph"]
+                        ec = pr["target_ec"]
+                        ppm = pr["target_ppm"]
+                conn.execute(
+                    """
+                    INSERT INTO logs (
+                        id, plant_id, environment_id, log_type, title, notes,
+                        logged_at, ph, ec, ppm, nutrients_json, status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)
+                    """,
+                    (
+                        log_id,
+                        rem["plant_id"],
+                        rem["environment_id"],
+                        rem["action_type"],
+                        rem["title"],
+                        rem["notes"] or "Completed from reminder",
+                        now_str,
+                        ph,
+                        ec,
+                        ppm,
+                        nutrients_json,
+                        now_str,
+                    ),
+                )
+                lrow = conn.execute(
+                    "SELECT * FROM logs WHERE id = ?", (log_id,)
+                ).fetchone()
+                created_log = _deserialize_log(lrow)
+
+            rec_days = rem["recurrence_days"]
+            if rec_days and int(rec_days) > 0:
+                next_due = (
+                    (now_dt + timedelta(days=int(rec_days)))
+                    .replace(microsecond=0)
+                    .isoformat()
+                )
+                conn.execute(
+                    """
+                    UPDATE reminders
+                    SET due_at = ?, last_completed_at = ?, last_notified_at = NULL,
+                        status = 'active', updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (next_due, now_str, now_str, reminder_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE reminders
+                    SET status = 'completed', last_completed_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now_str, now_str, reminder_id),
+                )
+
+            updated = conn.execute(
+                "SELECT * FROM reminders WHERE id = ?", (reminder_id,)
+            ).fetchone()
+            return {"reminder": dict(updated), "created_log": created_log}
+
+    async def async_mark_reminders_notified(
+        self, reminder_ids: list[str], now_iso: str | None = None
+    ) -> None:
+        """Record notification timestamp on due reminders to prevent duplicate events."""
+        if not reminder_ids:
+            return
+        await self._run(self._mark_reminders_notified_sync, reminder_ids, now_iso)
+
+    def _mark_reminders_notified_sync(
+        self, reminder_ids: list[str], now_iso: str | None
+    ) -> None:
+        now_str = now_iso or utc_now_iso()
+        with self._connect() as conn:
+            conn.executemany(
+                "UPDATE reminders SET last_notified_at = ? WHERE id = ?",
+                [(now_str, rid) for rid in reminder_ids],
+            )
+
+    async def async_delete_reminder(self, reminder_id: str) -> bool:
+        """Delete a reminder."""
+        return await self._run(self._delete_reminder_sync, reminder_id)
+
+    def _delete_reminder_sync(self, reminder_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+            return cur.rowcount > 0

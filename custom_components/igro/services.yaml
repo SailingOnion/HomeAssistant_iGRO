@@ -302,3 +302,76 @@ record_harvest:
       selector:
         text:
           multiline: true
+
+create_reminder:
+  name: Create grow reminder
+  description: Schedule a one-time or recurring reminder (appears in iGro, HA Calendar, and HA To-Do).
+  fields:
+    title:
+      name: Title
+      required: true
+      example: "Water Northern Lights #1"
+      selector:
+        text:
+    plant:
+      name: Plant
+      description: Optional plant ID or exact plant name.
+      selector:
+        text:
+    action_type:
+      name: Action type
+      default: water
+      selector:
+        select:
+          options:
+            - water
+            - feed
+            - training
+            - defoliation
+            - measurement
+            - flush
+            - burp_jars
+            - stage_change
+            - note
+    due_at:
+      name: Due date/time (ISO-8601)
+      selector:
+        text:
+    recurrence_days:
+      name: Repeat every (days)
+      selector:
+        number:
+          min: 1
+          max: 365
+    moisture_threshold:
+      name: Soil moisture trigger (%)
+      description: Mark due early if linked plant's soil moisture drops below this threshold.
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+    auto_log_on_complete:
+      name: Auto-log to journal when completed
+      default: true
+      selector:
+        boolean:
+    notes:
+      name: Notes
+      selector:
+        text:
+          multiline: true
+
+complete_reminder:
+  name: Complete grow reminder
+  description: Mark a reminder completed (advances recurring schedule and optionally creates a journal entry).
+  fields:
+    reminder_id:
+      name: Reminder ID
+      required: true
+      selector:
+        text:
+    create_log:
+      name: Create journal log entry
+      selector:
+        boolean:

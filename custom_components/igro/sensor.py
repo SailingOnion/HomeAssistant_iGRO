@@ -83,6 +83,16 @@ SUMMARY_SENSORS: tuple[IGroSensorDesc, ...] = (
             "keeper_count": d.get("summary", {}).get("keeper_count", 0),
         },
     ),
+    IGroSensorDesc(
+        key="due_reminders",
+        name="Due Reminders",
+        icon="mdi:bell-ring-outline",
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: d.get("summary", {}).get("due_reminders", 0),
+        attrs_fn=lambda d: {
+            "active_reminders": d.get("summary", {}).get("active_reminders", 0),
+        },
+    ),
 )
 
 ENVIRONMENT_SENSORS: tuple[IGroSensorDesc, ...] = (

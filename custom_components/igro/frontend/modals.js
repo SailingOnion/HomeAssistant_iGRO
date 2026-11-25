@@ -5,6 +5,7 @@
 import {
   LOG_TYPE_META,
   NUTRIENT_UNITS,
+  REMINDER_ACTION_META,
   STAGE_META,
   TRAINING_METHODS,
   escapeHtml,
@@ -12,7 +13,7 @@ import {
   scaleNutrientsForVolume,
   stageBadgeHtml,
   toLocalDatetimeInput,
-} from "./api.js?v=0.4.0";
+} from "./api.js?v=0.5.0";
 
 function entityOptionsHtml(entities = [], selected = "", placeholder = "None") {
   const opts = [`<option value="">${escapeHtml(placeholder)}</option>`];
@@ -976,6 +977,131 @@ export function renderGrowCycleModal(cycle) {
           <div class="modal-footer">
             <button type="button" class="btn" data-close-modal="1">Cancel</button>
             <button type="submit" class="btn btn-primary">${isEdit ? "Save Cycle" : "Create Cycle"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderReminderModal(reminder, state) {
+  const isEdit = Boolean(reminder?.id);
+  const defaultDue = reminder?.due_at
+    ? toLocalDatetimeInput(reminder.due_at)
+    : toLocalDatetimeInput(new Date(Date.now() + 3600 * 1000).toISOString());
+  const actionType = reminder?.action_type || "water";
+  const presets = state.nutrient_presets || [];
+  const autoLogChecked =
+    reminder?.auto_log_on_complete === undefined ? true : Boolean(reminder.auto_log_on_complete);
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">${isEdit ? "✏️ Edit Reminder" : "⏰ New Grow Reminder"}</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="reminder-form">
+          <div class="modal-body">
+            <div class="form-grid">
+              <div class="form-field full">
+                <label class="form-label">Reminder Title *</label>
+                <input class="input" name="title" required placeholder="e.g. Water Northern Lights #1" value="${escapeHtml(reminder?.title || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Action Type</label>
+                <select class="select" name="action_type">
+                  ${Object.entries(REMINDER_ACTION_META)
+                    .map(
+                      ([k, v]) =>
+                        `<option value="${k}" ${actionType === k ? "selected" : ""}>${v.icon} ${escapeHtml(v.label)}</option>`
+                    )
+                    .join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Due Date & Time *</label>
+                <input class="input" type="datetime-local" name="due_at" required value="${escapeHtml(defaultDue)}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Plant (optional)</label>
+                <select class="select" name="plant_id">
+                  <option value="">General / All Plants</option>
+                  ${(state.plants || [])
+                    .map(
+                      (p) =>
+                        `<option value="${escapeHtml(p.id)}" ${reminder?.plant_id === p.id ? "selected" : ""}>${escapeHtml(p.name)}</option>`
+                    )
+                    .join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Environment / Tent (optional)</label>
+                <select class="select" name="environment_id">
+                  <option value="">Auto from plant / None</option>
+                  ${(state.environments || [])
+                    .map(
+                      (e) =>
+                        `<option value="${escapeHtml(e.id)}" ${reminder?.environment_id === e.id ? "selected" : ""}>${escapeHtml(e.name)}</option>`
+                    )
+                    .join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Repeat Every (days, optional)</label>
+                <input class="input" type="number" min="1" max="365" step="1" name="recurrence_days" placeholder="One-time if blank (e.g. 3)" value="${reminder?.recurrence_days ?? ""}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Soil Moisture Trigger (% optional)</label>
+                <input class="input" type="number" min="1" max="100" step="1" name="moisture_threshold" placeholder="Alert early if moisture < %" value="${reminder?.moisture_threshold ?? ""}" />
+              </div>
+              ${
+                presets.length
+                  ? `
+                <div class="form-field full">
+                  <label class="form-label">Linked Nutrient Preset (optional — auto-fills journal when completed)</label>
+                  <select class="select" name="preset_id">
+                    <option value="">None</option>
+                    ${presets
+                      .map(
+                        (pr) =>
+                          `<option value="${escapeHtml(pr.id)}" ${reminder?.preset_id === pr.id ? "selected" : ""}>🧪 ${escapeHtml(pr.name)}</option>`
+                      )
+                      .join("")}
+                  </select>
+                </div>
+              `
+                  : ""
+              }
+              ${
+                isEdit
+                  ? `
+                <div class="form-field full">
+                  <label class="form-label">Status</label>
+                  <select class="select" name="status">
+                    <option value="active" ${(reminder?.status || "active") === "active" ? "selected" : ""}>Active</option>
+                    <option value="paused" ${reminder?.status === "paused" ? "selected" : ""}>Paused</option>
+                    <option value="completed" ${reminder?.status === "completed" ? "selected" : ""}>Completed</option>
+                  </select>
+                </div>
+              `
+                  : ""
+              }
+              <div class="form-field full">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600;">
+                  <input type="checkbox" name="auto_log_on_complete" ${autoLogChecked ? "checked" : ""} />
+                  <span>📓 Automatically create a Grow Journal entry when marked done</span>
+                </label>
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Notes</label>
+                <textarea class="textarea" name="notes" placeholder="Dosage reminders, runoff check, burp duration...">${escapeHtml(reminder?.notes || "")}</textarea>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">${isEdit ? "Save Reminder" : "Create Reminder"}</button>
           </div>
         </form>
       </div>

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "igro"
-PLATFORMS = ["sensor", "binary_sensor", "select", "button"]
+PLATFORMS = ["sensor", "binary_sensor", "select", "button", "calendar", "todo"]
 
 # Configuration keys
 CONF_DB_PATH = "db_path"
@@ -143,6 +143,7 @@ EVENT_LOG_CREATED = f"{DOMAIN}_log_created"
 EVENT_STAGE_CHANGED = f"{DOMAIN}_stage_changed"
 EVENT_PHOTO_ADDED = f"{DOMAIN}_photo_added"
 EVENT_HARVEST_RECORDED = f"{DOMAIN}_harvest_recorded"
+EVENT_REMINDER_DUE = f"{DOMAIN}_reminder_due"
 
 # Services
 SERVICE_LOG_ACTION = "log_action"
@@ -151,6 +152,8 @@ SERVICE_SET_STAGE = "set_stage"
 SERVICE_CAPTURE_PHOTO = "capture_photo"
 SERVICE_CREATE_PLANT = "create_plant"
 SERVICE_RECORD_HARVEST = "record_harvest"
+SERVICE_CREATE_REMINDER = "create_reminder"
+SERVICE_COMPLETE_REMINDER = "complete_reminder"
 
 # Allowed photo MIME types / extensions
 ALLOWED_IMAGE_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png", ".webp", ".gif"}

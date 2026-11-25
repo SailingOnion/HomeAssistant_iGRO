@@ -77,6 +77,11 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_add_curing_log,
         ws_delete_curing_log,
         ws_export_plant_report,
+        ws_list_reminders,
+        ws_create_reminder,
+        ws_update_reminder,
+        ws_complete_reminder,
+        ws_delete_reminder,
     ]
     for cmd in commands:
         websocket_api.async_register_command(hass, cmd)
@@ -111,6 +116,7 @@ async def ws_get_state(
             "nutrient_presets": data.get("nutrient_presets", []),
             "grow_cycles": data.get("grow_cycles", []),
             "harvests": data.get("harvests", []),
+            "reminders": data.get("reminders", []),
             "summary": data.get("summary", {}),
             "meta": {
                 "stages": GROW_STAGES,
@@ -1229,3 +1235,141 @@ async def ws_export_plant_report(
             "markdown": _format_plant_report_markdown(report),
         },
     )
+
+
+# ------------------------------------------------------------------
+# Reminders & Schedules WS commands
+# ------------------------------------------------------------------
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/reminders/list",
+        vol.Optional("status"): vol.Any(str, None),
+        vol.Optional("plant_id"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+async def ws_list_reminders(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """List reminders."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    reminders = await coordinator.db.async_list_reminders(
+        status=msg.get("status"), plant_id=msg.get("plant_id")
+    )
+    connection.send_result(msg["id"], {"reminders": reminders})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/reminders/create",
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_create_reminder(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Create a reminder."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    created = await coordinator.db.async_create_reminder(msg["data"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"reminder": created})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/reminders/update",
+        vol.Required("reminder_id"): str,
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_update_reminder(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update a reminder."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    updated = await coordinator.db.async_update_reminder(
+        msg["reminder_id"], msg["data"]
+    )
+    if updated is None:
+        connection.send_error(msg["id"], "not_found", "Reminder not found")
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"reminder": updated})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/reminders/complete",
+        vol.Required("reminder_id"): str,
+        vol.Optional("create_log"): vol.Any(bool, None),
+    }
+)
+@websocket_api.async_response
+async def ws_complete_reminder(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Complete a reminder (advances recurring due_at & optionally creates log)."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    result = await coordinator.db.async_complete_reminder(
+        msg["reminder_id"], create_log=msg.get("create_log")
+    )
+    if result is None:
+        connection.send_error(msg["id"], "not_found", "Reminder not found")
+        return
+    if result.get("created_log"):
+        lg = result["created_log"]
+        hass.bus.async_fire(
+            EVENT_LOG_CREATED,
+            {
+                "log_id": lg["id"],
+                "plant_id": lg.get("plant_id"),
+                "log_type": lg.get("log_type"),
+                "status": lg.get("status"),
+            },
+        )
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/reminders/delete",
+        vol.Required("reminder_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_reminder(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete a reminder."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    deleted = await coordinator.db.async_delete_reminder(msg["reminder_id"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"deleted": deleted})

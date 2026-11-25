@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 import logging
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,7 @@ from .calculations import (
     days_since,
     evaluate_range_status,
     get_effective_vpd_targets,
+    parse_iso_datetime,
     suggest_presets_for_plant,
     to_celsius,
 )
@@ -28,6 +29,7 @@ from .const import (
     ACTIVE_STAGES,
     DEFAULT_LEAF_TEMP_OFFSET_C,
     DOMAIN,
+    EVENT_REMINDER_DUE,
     EVENT_STAGE_CHANGED,
     SIGNAL_ENTITIES_CHANGED,
     VPD_STATUS_HIGH,
@@ -458,6 +460,77 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
             )
 
+        # Enrich reminders with due/overdue/moisture-trigger status & fire due events once
+        now_utc = datetime.now(UTC)
+        today_utc = now_utc.date()
+        preset_name_map: dict[str, str] = {
+            pr["id"]: pr["name"] for pr in nutrient_presets
+        }
+        raw_reminders: list[dict[str, Any]] = snapshot.get("reminders", [])
+        enriched_reminders: list[dict[str, Any]] = []
+        due_to_notify: list[dict[str, Any]] = []
+        due_reminders_count = 0
+        active_reminders_count = 0
+
+        for rem in raw_reminders:
+            is_active = rem.get("status") == "active"
+            if is_active:
+                active_reminders_count += 1
+            due_dt = parse_iso_datetime(rem.get("due_at"))
+            is_overdue = bool(is_active and due_dt is not None and due_dt <= now_utc)
+            is_due_today = bool(
+                is_active
+                and due_dt is not None
+                and (due_dt <= now_utc or due_dt.date() == today_utc)
+            )
+            plant_obj = plants_map.get(rem.get("plant_id") or "")
+            moisture_thresh = rem.get("moisture_threshold")
+            plant_moist = plant_obj.get("soil_moisture") if plant_obj else None
+            is_moisture_triggered = bool(
+                is_active
+                and moisture_thresh is not None
+                and plant_moist is not None
+                and plant_moist <= float(moisture_thresh)
+            )
+            is_due = is_overdue or is_moisture_triggered
+            if is_due:
+                due_reminders_count += 1
+                if not rem.get("last_notified_at"):
+                    due_to_notify.append(rem)
+
+            enriched_reminders.append(
+                {
+                    **rem,
+                    "auto_log_on_complete": bool(rem.get("auto_log_on_complete")),
+                    "plant_name": plant_obj["name"] if plant_obj else None,
+                    "environment_name": env_name_map.get(
+                        rem.get("environment_id") or ""
+                    ),
+                    "preset_name": preset_name_map.get(rem.get("preset_id") or ""),
+                    "is_overdue": is_overdue,
+                    "is_due_today": is_due_today,
+                    "is_moisture_triggered": is_moisture_triggered,
+                    "is_due": is_due,
+                }
+            )
+
+        if due_to_notify:
+            await self.db.async_mark_reminders_notified(
+                [r["id"] for r in due_to_notify]
+            )
+            for rem in due_to_notify:
+                self.hass.bus.async_fire(
+                    EVENT_REMINDER_DUE,
+                    {
+                        "reminder_id": rem["id"],
+                        "title": rem["title"],
+                        "action_type": rem.get("action_type"),
+                        "plant_id": rem.get("plant_id"),
+                        "environment_id": rem.get("environment_id"),
+                        "due_at": rem.get("due_at"),
+                    },
+                )
+
         self._rebind_state_listeners(tracked_entity_ids)
 
         return {
@@ -470,6 +543,7 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "nutrient_presets": nutrient_presets,
             "grow_cycles": enriched_cycles,
             "harvests": enriched_harvests,
+            "reminders": enriched_reminders,
             "summary": {
                 "active_plants": active_plant_count,
                 "total_plants": len(plants_map),
@@ -482,6 +556,8 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "avg_dry_yield_g": avg_dry_yield_g,
                 "keeper_count": keeper_count,
                 "total_grow_cycles": len(enriched_cycles),
+                "active_reminders": active_reminders_count,
+                "due_reminders": due_reminders_count,
             },
         }
 
