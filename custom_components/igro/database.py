@@ -699,15 +699,15 @@ class IGroDatabase:
     ) -> dict[str, Any] | None:
         """Sort stage_history chronologically, chain ended_at, and sync plant.stage."""
         rows = conn.execute(
-            "SELECT * FROM stage_history WHERE plant_id = ?", (plant_id,)
+            "SELECT rowid, * FROM stage_history WHERE plant_id = ?", (plant_id,)
         ).fetchall()
         if not rows:
             row = conn.execute("SELECT * FROM plants WHERE id = ?", (plant_id,)).fetchone()
             return _row_to_dict(row)
 
-        def _sort_key(r: sqlite3.Row) -> tuple[float, str]:
+        def _sort_key(r: sqlite3.Row) -> tuple[float, int]:
             dt = parse_iso_datetime(r["started_at"])
-            return (dt.timestamp() if dt else 0.0, r["id"])
+            return (dt.timestamp() if dt else 0.0, int(r["rowid"]))
 
         ordered = sorted(rows, key=_sort_key)
         for idx, item in enumerate(ordered):
