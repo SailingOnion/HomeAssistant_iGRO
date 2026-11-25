@@ -175,6 +175,18 @@ export function vpdBadgeHtml(env) {
   return `<span class="badge ${cls}">VPD ${env.vpd_kpa.toFixed(2)} kPa</span>`;
 }
 
+export function downloadTextFile(filename, content, mimeType = "text/plain;charset=utf-8") {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export class IGroApi {
   constructor(hass) {
     this.hass = hass;
@@ -316,6 +328,38 @@ export class IGroApi {
 
   async deletePreset(preset_id) {
     return this.hass.callWS({ type: "igro/presets/delete", preset_id });
+  }
+
+  async createGrowCycle(data) {
+    return this.hass.callWS({ type: "igro/cycles/create", data });
+  }
+
+  async updateGrowCycle(cycle_id, data) {
+    return this.hass.callWS({ type: "igro/cycles/update", cycle_id, data });
+  }
+
+  async deleteGrowCycle(cycle_id) {
+    return this.hass.callWS({ type: "igro/cycles/delete", cycle_id });
+  }
+
+  async upsertHarvest(plant_id, data) {
+    return this.hass.callWS({ type: "igro/harvests/upsert", plant_id, data });
+  }
+
+  async deleteHarvest(harvest_id) {
+    return this.hass.callWS({ type: "igro/harvests/delete", harvest_id });
+  }
+
+  async addCuringLog(harvest_id, data) {
+    return this.hass.callWS({ type: "igro/curing/add", harvest_id, data });
+  }
+
+  async deleteCuringLog(curing_log_id) {
+    return this.hass.callWS({ type: "igro/curing/delete", curing_log_id });
+  }
+
+  async exportPlantReport(plant_id) {
+    return this.hass.callWS({ type: "igro/reports/export", plant_id });
   }
 
   async uploadPhoto(formData) {

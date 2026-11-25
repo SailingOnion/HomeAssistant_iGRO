@@ -233,3 +233,72 @@ create_plant:
       selector:
         text:
           multiline: true
+
+record_harvest:
+  name: Record harvest & yield
+  description: Record or update wet/dry/trim weights, rating, and curing notes for a plant.
+  fields:
+    plant:
+      name: Plant
+      description: Plant ID or exact plant name.
+      required: true
+      selector:
+        text:
+    wet_weight_g:
+      name: Wet weight (g)
+      selector:
+        number:
+          min: 0
+          max: 50000
+          step: 0.1
+          unit_of_measurement: g
+    dry_weight_g:
+      name: Dry weight (g)
+      selector:
+        number:
+          min: 0
+          max: 50000
+          step: 0.1
+          unit_of_measurement: g
+    trim_weight_g:
+      name: Trim / larf weight (g)
+      selector:
+        number:
+          min: 0
+          max: 50000
+          step: 0.1
+          unit_of_measurement: g
+    rating:
+      name: Rating (1–5)
+      selector:
+        number:
+          min: 1
+          max: 5
+          step: 1
+    is_keeper:
+      name: Phenotype keeper
+      default: false
+      selector:
+        boolean:
+    aroma_notes:
+      name: Aroma / terpene notes
+      selector:
+        text:
+    effect_notes:
+      name: Effect / smoke notes
+      selector:
+        text:
+    set_plant_stage:
+      name: Update plant stage
+      selector:
+        select:
+          options:
+            - drying
+            - curing
+            - harvested
+            - archived
+    notes:
+      name: Notes
+      selector:
+        text:
+          multiline: true

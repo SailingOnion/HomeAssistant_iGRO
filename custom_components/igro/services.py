@@ -16,6 +16,7 @@ from .calculations import (
 )
 from .const import (
     DOMAIN,
+    EVENT_HARVEST_RECORDED,
     EVENT_LOG_CREATED,
     EVENT_STAGE_CHANGED,
     GROW_STAGES,
@@ -24,6 +25,7 @@ from .const import (
     SERVICE_CAPTURE_PHOTO,
     SERVICE_CREATE_PLANT,
     SERVICE_LOG_ACTION,
+    SERVICE_RECORD_HARVEST,
     SERVICE_SET_STAGE,
 )
 from .coordinator import IGroCoordinator
@@ -208,6 +210,24 @@ async def async_register_services(hass: HomeAssistant) -> None:
         await coordinator.db.async_create_plant(dict(call.data))
         await coordinator.async_notify_structure_changed()
 
+    async def handle_record_harvest(call: ServiceCall) -> None:
+        coordinator = _get_coordinator(hass)
+        data = dict(call.data)
+        plant_id = _resolve_plant_id(coordinator, data.pop("plant"))
+        harvest = await coordinator.db.async_upsert_harvest(plant_id, data)
+        if harvest is None:
+            raise HomeAssistantError(f"Plant '{plant_id}' not found")
+        hass.bus.async_fire(
+            EVENT_HARVEST_RECORDED,
+            {
+                "harvest_id": harvest["id"],
+                "plant_id": plant_id,
+                "dry_weight_g": harvest.get("dry_weight_g"),
+                "wet_weight_g": harvest.get("wet_weight_g"),
+            },
+        )
+        await coordinator.async_request_refresh()
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_LOG_ACTION,
@@ -296,6 +316,32 @@ async def async_register_services(hass: HomeAssistant) -> None:
     )
 
 
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RECORD_HARVEST,
+        handle_record_harvest,
+        schema=vol.Schema(
+            {
+                vol.Required("plant"): cv.string,
+                vol.Optional("harvested_at"): cv.string,
+                vol.Optional("wet_weight_g"): vol.Coerce(float),
+                vol.Optional("dry_weight_g"): vol.Coerce(float),
+                vol.Optional("trim_weight_g"): vol.Coerce(float),
+                vol.Optional("dry_days"): vol.Coerce(int),
+                vol.Optional("cure_rh_pct"): vol.Coerce(float),
+                vol.Optional("aroma_notes"): cv.string,
+                vol.Optional("effect_notes"): cv.string,
+                vol.Optional("rating"): vol.All(
+                    vol.Coerce(int), vol.Range(min=1, max=5)
+                ),
+                vol.Optional("is_keeper", default=False): cv.boolean,
+                vol.Optional("set_plant_stage"): vol.In(GROW_STAGES),
+                vol.Optional("notes"): cv.string,
+            }
+        ),
+    )
+
+
 async def async_unregister_services(hass: HomeAssistant) -> None:
     """Unregister iGro services on unload."""
     for svc in (
@@ -304,6 +350,7 @@ async def async_unregister_services(hass: HomeAssistant) -> None:
         SERVICE_ADVANCE_STAGE,
         SERVICE_CAPTURE_PHOTO,
         SERVICE_CREATE_PLANT,
+        SERVICE_RECORD_HARVEST,
     ):
         if hass.services.has_service(DOMAIN, svc):
             hass.services.async_remove(DOMAIN, svc)

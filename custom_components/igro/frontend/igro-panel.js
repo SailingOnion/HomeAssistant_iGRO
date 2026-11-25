@@ -8,6 +8,7 @@ import {
   LOG_TYPE_META,
   NUTRIENT_UNITS,
   STAGE_META,
+  downloadTextFile,
   escapeHtml,
   formatDate,
   formatDateTime,
@@ -17,10 +18,13 @@ import {
   scaleNutrientsForVolume,
   stageBadgeHtml,
   vpdBadgeHtml,
-} from "./api.js?v=0.3.0";
+} from "./api.js?v=0.4.0";
 import {
   renderConfirmModal,
+  renderCuringLogModal,
   renderEnvironmentModal,
+  renderGrowCycleModal,
+  renderHarvestModal,
   renderLightboxModal,
   renderLogModal,
   renderPhotoModal,
@@ -29,8 +33,8 @@ import {
   renderScaledMixHtml,
   renderStageHistoryModal,
   renderStageModal,
-} from "./modals.js?v=0.3.0";
-import { PANEL_STYLES } from "./styles.js?v=0.3.0";
+} from "./modals.js?v=0.4.0";
+import { PANEL_STYLES } from "./styles.js?v=0.4.0";
 
 class IGroPanel extends HTMLElement {
   constructor() {
@@ -54,6 +58,10 @@ class IGroPanel extends HTMLElement {
       logStatus: "",
       photoPlant: "",
       photoStage: "",
+      archiveSearch: "",
+      archiveCycle: "",
+      archiveKeepersOnly: false,
+      archiveSort: "newest",
     };
 
     this._state = {
@@ -64,6 +72,8 @@ class IGroPanel extends HTMLElement {
       scheduled_stage_changes: [],
       recent_photos: [],
       nutrient_presets: [],
+      grow_cycles: [],
+      harvests: [],
       summary: {},
       meta: { temperature_unit: "°C" },
     };
@@ -245,6 +255,8 @@ class IGroPanel extends HTMLElement {
       mainHtml = this._renderJournal(unit);
     } else if (this._tab === "gallery") {
       mainHtml = this._renderGallery();
+    } else if (this._tab === "archive") {
+      mainHtml = this._renderArchive();
     }
 
     let modalHtml = "";
@@ -265,6 +277,12 @@ class IGroPanel extends HTMLElement {
         modalHtml = renderStageModal(this._modal.data);
       } else if (this._modal.type === "stage_history") {
         modalHtml = renderStageHistoryModal(this._modal.data, this._state);
+      } else if (this._modal.type === "harvest") {
+        modalHtml = renderHarvestModal(this._modal.data, this._state);
+      } else if (this._modal.type === "curing") {
+        modalHtml = renderCuringLogModal(this._modal.data);
+      } else if (this._modal.type === "cycle") {
+        modalHtml = renderGrowCycleModal(this._modal.data);
       } else if (this._modal.type === "confirm") {
         modalHtml = renderConfirmModal(this._modal.data);
       }
@@ -285,6 +303,7 @@ class IGroPanel extends HTMLElement {
             <button class="nav-tab ${this._tab === "environments" ? "active" : ""}" data-tab="environments">⛺ Environments</button>
             <button class="nav-tab ${this._tab === "journal" ? "active" : ""}" data-tab="journal">📓 Journal</button>
             <button class="nav-tab ${this._tab === "gallery" ? "active" : ""}" data-tab="gallery">📷 Gallery</button>
+            <button class="nav-tab ${this._tab === "archive" ? "active" : ""}" data-tab="archive">🏆 Archive</button>
           </nav>
         </div>
         <div class="topbar-actions">
@@ -515,6 +534,110 @@ class IGroPanel extends HTMLElement {
             : `<div class="empty-state"><p>No stage history recorded.</p></div>`
         }
       `;
+    } else if (this._plantSubTab === "harvest") {
+      const h = plant.harvest;
+      if (!h) {
+        subHtml = `
+          <div class="empty-state">
+            <div class="empty-state-emoji">🌾</div>
+            <h3>No harvest recorded yet</h3>
+            <p>Record wet weight, dry flower weight, trim, drying days, curing RH, and tasting notes once this plant finishes.</p>
+            <button class="btn btn-primary" data-record-harvest="${escapeHtml(plant.id)}">🌾 Record Harvest</button>
+          </div>
+        `;
+      } else {
+        const curingLogs = h.curing_logs || [];
+        subHtml = `
+          <div class="card" style="margin-bottom:16px;">
+            <div class="card-body">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                  <h3 style="margin:0;">🌾 Harvest Summary</h3>
+                  <span class="badge badge-muted">📅 ${formatDate(h.harvested_at)}</span>
+                  ${h.rating ? `<span class="badge badge-warn">${"★".repeat(h.rating)}</span>` : ""}
+                  ${h.is_keeper ? `<span class="badge badge-ok">🏆 Keeper</span>` : ""}
+                </div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                  <button class="btn btn-sm" data-export-report-md="${escapeHtml(plant.id)}">📄 Export MD</button>
+                  <button class="btn btn-sm" data-export-report-json="${escapeHtml(plant.id)}">📦 Export JSON</button>
+                  <button class="btn btn-sm" data-record-harvest="${escapeHtml(plant.id)}">✏️ Edit</button>
+                  <button class="btn btn-sm btn-danger" data-delete-harvest="${escapeHtml(h.id)}">🗑</button>
+                </div>
+              </div>
+
+              <div class="stat-chips" style="grid-template-columns:repeat(auto-fit, minmax(115px, 1fr));margin-top:14px;">
+                <div class="stat-chip">
+                  <div class="stat-chip-label">Wet Weight</div>
+                  <div class="stat-chip-val">${h.wet_weight_g !== null && h.wet_weight_g !== undefined ? `${h.wet_weight_g} g` : "—"}</div>
+                </div>
+                <div class="stat-chip">
+                  <div class="stat-chip-label">Dry Flower</div>
+                  <div class="stat-chip-val" style="color:var(--igro-accent);">${h.dry_weight_g !== null && h.dry_weight_g !== undefined ? `${h.dry_weight_g} g` : "—"}${h.dry_weight_oz ? ` (${h.dry_weight_oz} oz)` : ""}</div>
+                </div>
+                <div class="stat-chip">
+                  <div class="stat-chip-label">Retention</div>
+                  <div class="stat-chip-val">${h.retention_pct !== null && h.retention_pct !== undefined ? `${h.retention_pct}%` : "—"}</div>
+                </div>
+                <div class="stat-chip">
+                  <div class="stat-chip-label">Trim / Larf</div>
+                  <div class="stat-chip-val">${h.trim_weight_g !== null && h.trim_weight_g !== undefined ? `${h.trim_weight_g} g` : "—"}</div>
+                </div>
+                <div class="stat-chip">
+                  <div class="stat-chip-label">Efficiency</div>
+                  <div class="stat-chip-val">${h.grams_per_watt !== null && h.grams_per_watt !== undefined ? `${h.grams_per_watt} g/W` : "—"}</div>
+                </div>
+                <div class="stat-chip">
+                  <div class="stat-chip-label">Cure / Jar RH</div>
+                  <div class="stat-chip-val">${h.cure_rh_pct !== null && h.cure_rh_pct !== undefined ? `${h.cure_rh_pct}%` : "—"}${h.curing_days !== null && h.curing_days !== undefined ? ` · D${h.curing_days}` : ""}</div>
+                </div>
+              </div>
+
+              ${
+                h.aroma_notes || h.effect_notes
+                  ? `<div class="log-chips" style="margin-top:12px;">
+                      ${h.aroma_notes ? `<span class="log-chip">👃 Aroma: ${escapeHtml(h.aroma_notes)}</span>` : ""}
+                      ${h.effect_notes ? `<span class="log-chip">✨ Effects: ${escapeHtml(h.effect_notes)}</span>` : ""}
+                      ${h.dry_days ? `<span class="log-chip">🍂 Dried ${h.dry_days} days</span>` : ""}
+                    </div>`
+                  : ""
+              }
+              ${h.notes ? `<p class="log-notes">${escapeHtml(h.notes)}</p>` : ""}
+            </div>
+          </div>
+
+          <div class="section-header" style="margin-top:8px;">
+            <h3 class="section-title">🫙 Curing & Burping Log (${curingLogs.length})</h3>
+            <button class="btn btn-primary btn-sm" data-add-curing="${escapeHtml(h.id)}" data-plant-name="${escapeHtml(plant.name)}">+ Log Jar Check / Burp</button>
+          </div>
+          ${
+            curingLogs.length
+              ? `<div class="timeline">${curingLogs
+                  .map(
+                    (cl) => `
+                  <div class="log-item">
+                    <div class="log-icon" style="background:rgba(2,132,199,0.16);color:#0284c7;">🫙</div>
+                    <div class="log-body">
+                      <div class="log-header">
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                          <span class="log-title">${cl.burped ? "Jar Burped" : "Jar Checked"}</span>
+                          ${cl.jar_rh_pct !== null && cl.jar_rh_pct !== undefined ? `<span class="badge ${cl.jar_rh_pct >= 58 && cl.jar_rh_pct <= 65 ? "badge-ok" : "badge-warn"}">RH ${cl.jar_rh_pct}%</span>` : ""}
+                          ${cl.jar_temp_c !== null && cl.jar_temp_c !== undefined ? `<span class="badge badge-muted">${formatTemp(cl.jar_temp_c, unit)}</span>` : ""}
+                        </div>
+                        <div style="display:flex;align-items:center;gap:6px;">
+                          <span class="log-time" title="${escapeHtml(formatDateTime(cl.logged_at))}">${formatRelative(cl.logged_at)}</span>
+                          <button class="btn btn-sm btn-icon btn-danger" data-delete-curing="${escapeHtml(cl.id)}" title="Delete curing entry">✕</button>
+                        </div>
+                      </div>
+                      ${cl.notes ? `<p class="log-notes">${escapeHtml(cl.notes)}</p>` : ""}
+                    </div>
+                  </div>
+                `
+                  )
+                  .join("")}</div>`
+              : `<div class="empty-state"><p>No jar checks logged yet. Click <strong>+ Log Jar Check / Burp</strong> to track curing humidity.</p></div>`
+          }
+        `;
+      }
     }
 
     const schedStages = plant.scheduled_stage_changes || [];
@@ -552,7 +675,8 @@ class IGroPanel extends HTMLElement {
     return `
       <div style="margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
         <button class="btn" id="btn-back-plants">← Back to Plants</button>
-        <div style="display:flex;gap:8px;">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn" data-export-report-md="${escapeHtml(plant.id)}">📄 Export Report</button>
           <button class="btn" id="btn-edit-plant">✏️ Edit</button>
           <button class="btn btn-danger" id="btn-delete-plant">🗑 Delete</button>
         </div>
@@ -576,6 +700,7 @@ class IGroPanel extends HTMLElement {
           </p>
           <div class="meta-row">
             ${plant.environment_name ? `<span>⛺ ${escapeHtml(plant.environment_name)}</span>` : "<span>⛺ Unassigned</span>"}
+            ${plant.grow_cycle_name ? `<span>🗓 ${escapeHtml(plant.grow_cycle_name)}</span>` : ""}
             <span>🪨 ${escapeHtml((plant.medium || "soil").replace("_", " "))}</span>
             ${plant.pot_size ? `<span>🏺 ${escapeHtml(plant.pot_size)}</span>` : ""}
             <span>📅 Started ${formatDate(plant.started_at)}</span>
@@ -643,6 +768,7 @@ class IGroPanel extends HTMLElement {
                 ? `<button class="btn btn-sm" id="btn-plant-snap-cam">🎥 Snap Camera</button>`
                 : ""
             }
+            <button class="btn btn-sm" data-record-harvest="${escapeHtml(plant.id)}">🌾 ${plant.harvest ? "Edit Harvest" : "Record Harvest"}</button>
           </div>
           ${plant.notes ? `<p class="log-notes" style="margin-top:12px;">${escapeHtml(plant.notes)}</p>` : ""}
         </div>
@@ -653,6 +779,7 @@ class IGroPanel extends HTMLElement {
         <button class="nav-tab ${this._plantSubTab === "journal" ? "active" : ""}" data-plant-subtab="journal">📓 Journal (${this._plantLogs.length})</button>
         <button class="nav-tab ${this._plantSubTab === "photos" ? "active" : ""}" data-plant-subtab="photos">📷 Photos (${this._plantPhotos.length})</button>
         <button class="nav-tab ${this._plantSubTab === "history" ? "active" : ""}" data-plant-subtab="history">📅 Stage History</button>
+        <button class="nav-tab ${this._plantSubTab === "harvest" ? "active" : ""}" data-plant-subtab="harvest">🌾 Harvest & Cure${plant.harvest?.dry_weight_g ? ` (${plant.harvest.dry_weight_g}g)` : ""}</button>
       </div>
       ${subHtml}
     `;
@@ -951,6 +1078,203 @@ class IGroPanel extends HTMLElement {
               <div class="empty-state-emoji">📷</div>
               <h3>No photos yet</h3>
               <p>Upload photos from your phone/desktop or capture snapshots straight from your Home Assistant cameras.</p>
+            </div>`
+      }
+    `;
+  }
+
+  _renderArchive() {
+    const s = this._state.summary || {};
+    const cycles = this._state.grow_cycles || [];
+    const f = this._filters;
+    const totalDryG = s.total_dry_yield_g || 0;
+    const totalDryOz = (totalDryG / 28.349523125).toFixed(2);
+
+    let harvests = [...(this._state.harvests || [])];
+    if (f.archiveCycle) {
+      harvests = harvests.filter((h) => h.grow_cycle_id === f.archiveCycle);
+    }
+    if (f.archiveKeepersOnly) {
+      harvests = harvests.filter((h) => h.is_keeper);
+    }
+    if (f.archiveSearch) {
+      const q = f.archiveSearch.toLowerCase();
+      harvests = harvests.filter((h) =>
+        `${h.plant_name || ""} ${h.strain || ""} ${h.breeder || ""} ${h.aroma_notes || ""} ${h.effect_notes || ""}`
+          .toLowerCase()
+          .includes(q)
+      );
+    }
+    if (f.archiveSort === "yield") {
+      harvests.sort((a, b) => (b.dry_weight_g || 0) - (a.dry_weight_g || 0));
+    } else if (f.archiveSort === "rating") {
+      harvests.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    }
+
+    return `
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div>
+            <div class="kpi-label">Harvested Plants</div>
+            <div class="kpi-value">${s.total_harvests ?? harvests.length}</div>
+          </div>
+          <span class="kpi-emoji">🌾</span>
+        </div>
+        <div class="kpi-card">
+          <div>
+            <div class="kpi-label">Total Dry Yield</div>
+            <div class="kpi-value">${totalDryG}g <span style="font-size:14px;color:var(--igro-text-muted);font-weight:500;">(${totalDryOz} oz)</span></div>
+          </div>
+          <span class="kpi-emoji">⚖️</span>
+        </div>
+        <div class="kpi-card">
+          <div>
+            <div class="kpi-label">Avg Dry / Plant</div>
+            <div class="kpi-value">${s.avg_dry_yield_g !== null && s.avg_dry_yield_g !== undefined ? `${s.avg_dry_yield_g}g` : "—"}</div>
+          </div>
+          <span class="kpi-emoji">📈</span>
+        </div>
+        <div class="kpi-card">
+          <div>
+            <div class="kpi-label">Keeper Phenos</div>
+            <div class="kpi-value">${s.keeper_count ?? 0}</div>
+          </div>
+          <span class="kpi-emoji">🏆</span>
+        </div>
+      </div>
+
+      <div class="section-header">
+        <h2 class="section-title">🗓 Grow Cycles (${cycles.length})</h2>
+        <button class="btn btn-sm btn-primary" id="btn-add-cycle">+ New Grow Cycle</button>
+      </div>
+      ${
+        cycles.length
+          ? `<div class="grid-cards" style="margin-bottom:22px;">${cycles
+              .map(
+                (c) => `
+              <div class="card">
+                <div class="card-body">
+                  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+                    <div>
+                      <h3 class="plant-title" style="margin:0;">🗓 ${escapeHtml(c.name)}</h3>
+                      <div class="plant-subtitle" style="margin:3px 0 0;">
+                        ${formatDate(c.started_at)}${c.ended_at ? ` → ${formatDate(c.ended_at)}` : " · Ongoing"}
+                      </div>
+                    </div>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                      <span class="badge ${c.status === "active" ? "badge-ok" : "badge-muted"}">${escapeHtml(c.status)}</span>
+                      <button class="btn btn-sm" data-edit-cycle="${escapeHtml(c.id)}">✏️</button>
+                      <button class="btn btn-sm btn-danger" data-delete-cycle="${escapeHtml(c.id)}">🗑</button>
+                    </div>
+                  </div>
+                  <div class="stat-chips" style="margin-top:12px;">
+                    <div class="stat-chip">
+                      <div class="stat-chip-label">Plants</div>
+                      <div class="stat-chip-val">${c.plant_count ?? 0}</div>
+                    </div>
+                    <div class="stat-chip">
+                      <div class="stat-chip-label">Harvested</div>
+                      <div class="stat-chip-val">${c.harvest_count ?? 0}</div>
+                    </div>
+                    <div class="stat-chip">
+                      <div class="stat-chip-label">Dry Yield</div>
+                      <div class="stat-chip-val">${c.total_dry_yield_g ?? 0}g</div>
+                    </div>
+                  </div>
+                  ${c.notes ? `<p class="log-notes">${escapeHtml(c.notes)}</p>` : ""}
+                </div>
+              </div>
+            `
+              )
+              .join("")}</div>`
+          : `<div class="empty-state" style="padding:24px;margin-bottom:22px;">
+              <p style="margin:0;">Group plants into named runs (e.g., <em>Winter 2026 Run</em>) with <strong>+ New Grow Cycle</strong>.</p>
+            </div>`
+      }
+
+      <div class="section-header">
+        <h2 class="section-title">🏆 Harvest Archive & Strain Comparison (${harvests.length})</h2>
+      </div>
+      <div class="filter-bar">
+        <input class="input" id="filter-archive-search" placeholder="Search strain, breeder, aroma, effects..." value="${escapeHtml(f.archiveSearch)}" style="min-width:230px;" />
+        <select class="select" id="filter-archive-cycle">
+          <option value="">All Grow Cycles</option>
+          ${cycles.map((c) => `<option value="${escapeHtml(c.id)}" ${f.archiveCycle === c.id ? "selected" : ""}>${escapeHtml(c.name)}</option>`).join("")}
+        </select>
+        <select class="select" id="filter-archive-sort">
+          <option value="newest" ${f.archiveSort === "newest" ? "selected" : ""}>Sort: Newest Harvest</option>
+          <option value="yield" ${f.archiveSort === "yield" ? "selected" : ""}>Sort: Highest Dry Yield</option>
+          <option value="rating" ${f.archiveSort === "rating" ? "selected" : ""}>Sort: Highest Rating</option>
+        </select>
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;cursor:pointer;">
+          <input type="checkbox" id="filter-archive-keepers" ${f.archiveKeepersOnly ? "checked" : ""} />
+          <span>🏆 Keepers Only</span>
+        </label>
+      </div>
+
+      ${
+        harvests.length
+          ? `<div class="grid-cards">${harvests
+              .map(
+                (h) => `
+              <div class="card">
+                <div class="plant-cover" style="height:130px;">
+                  ${
+                    h.cover_photo_url
+                      ? `<img src="${escapeHtml(h.cover_photo_url)}" alt="${escapeHtml(h.plant_name || "Harvest")}" loading="lazy" />`
+                      : `<span class="plant-cover-placeholder">🌾</span>`
+                  }
+                  <div class="plant-cover-overlay">
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                      ${h.is_keeper ? `<span class="badge badge-ok" style="background:rgba(15,23,42,0.82);color:#4ade80;">🏆 Keeper</span>` : ""}
+                      ${h.rating ? `<span class="plant-day-pill">${"★".repeat(h.rating)}</span>` : ""}
+                    </div>
+                    <span class="plant-day-pill">${formatDate(h.harvested_at)}</span>
+                  </div>
+                </div>
+                <div class="card-body">
+                  <h3 class="plant-title">${escapeHtml(h.plant_name || "Plant")}</h3>
+                  <div class="plant-subtitle">
+                    ${escapeHtml([h.strain, h.breeder, h.grow_cycle_name].filter(Boolean).join(" · ") || (h.medium || "soil"))}
+                  </div>
+                  <div class="stat-chips">
+                    <div class="stat-chip">
+                      <div class="stat-chip-label">Dry Yield</div>
+                      <div class="stat-chip-val" style="color:var(--igro-accent);">${h.dry_weight_g !== null && h.dry_weight_g !== undefined ? `${h.dry_weight_g}g` : "—"}</div>
+                    </div>
+                    <div class="stat-chip">
+                      <div class="stat-chip-label">Retention</div>
+                      <div class="stat-chip-val">${h.retention_pct !== null && h.retention_pct !== undefined ? `${h.retention_pct}%` : "—"}</div>
+                    </div>
+                    <div class="stat-chip">
+                      <div class="stat-chip-label">g / Watt</div>
+                      <div class="stat-chip-val">${h.grams_per_watt !== null && h.grams_per_watt !== undefined ? h.grams_per_watt : "—"}</div>
+                    </div>
+                  </div>
+                  ${
+                    h.aroma_notes || h.effect_notes
+                      ? `<div class="log-chips" style="margin-top:10px;">
+                          ${h.aroma_notes ? `<span class="log-chip">👃 ${escapeHtml(h.aroma_notes)}</span>` : ""}
+                          ${h.effect_notes ? `<span class="log-chip">✨ ${escapeHtml(h.effect_notes)}</span>` : ""}
+                        </div>`
+                      : ""
+                  }
+                  <div style="margin-top:14px;display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap;">
+                    <button class="btn btn-sm" data-open-plant="${escapeHtml(h.plant_id)}">🪴 Open Plant</button>
+                    <div style="display:flex;gap:6px;">
+                      <button class="btn btn-sm" data-export-report-md="${escapeHtml(h.plant_id)}">📄 MD</button>
+                      <button class="btn btn-sm" data-record-harvest="${escapeHtml(h.plant_id)}">✏️</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            `
+              )
+              .join("")}</div>`
+          : `<div class="empty-state">
+              <div class="empty-state-emoji">🏆</div>
+              <h3>No harvested plants yet</h3>
+              <p>Open any plant and click <strong>🌾 Record Harvest</strong> to track wet/dry weights, curing jars, and compare strains here.</p>
             </div>`
       }
     `;
@@ -1371,6 +1695,143 @@ class IGroPanel extends HTMLElement {
       this._render();
     });
 
+    // Archive filters & Grow Cycle / Harvest / Curing / Export actions
+    root.getElementById("filter-archive-search")?.addEventListener("input", (e) => {
+      this._filters.archiveSearch = e.target.value;
+      this._render();
+      const inp = this.shadowRoot.getElementById("filter-archive-search");
+      if (inp) {
+        inp.focus();
+        inp.setSelectionRange(inp.value.length, inp.value.length);
+      }
+    });
+    root.getElementById("filter-archive-cycle")?.addEventListener("change", (e) => {
+      this._filters.archiveCycle = e.target.value;
+      this._render();
+    });
+    root.getElementById("filter-archive-sort")?.addEventListener("change", (e) => {
+      this._filters.archiveSort = e.target.value;
+      this._render();
+    });
+    root.getElementById("filter-archive-keepers")?.addEventListener("change", (e) => {
+      this._filters.archiveKeepersOnly = e.target.checked;
+      this._render();
+    });
+
+    root.getElementById("btn-add-cycle")?.addEventListener("click", () => {
+      this._modal = { type: "cycle", data: null };
+      this._render();
+    });
+
+    root.querySelectorAll("[data-edit-cycle]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const cyc = (this._state.grow_cycles || []).find((c) => c.id === el.dataset.editCycle);
+        if (cyc) {
+          this._modal = { type: "cycle", data: cyc };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-delete-cycle]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const cyc = (this._state.grow_cycles || []).find((c) => c.id === el.dataset.deleteCycle);
+        if (!cyc) return;
+        this._openConfirm({
+          title: "🗑 Delete Grow Cycle",
+          message: `Delete grow cycle "${cyc.name}"? Plants and harvests inside will remain intact.`,
+          confirmLabel: "Delete Cycle",
+          onConfirm: async () => {
+            await this._api.deleteGrowCycle(cyc.id);
+            await this._refreshState();
+            this._showToast(`Deleted cycle "${cyc.name}"`);
+          },
+        });
+      });
+    });
+
+    root.querySelectorAll("[data-record-harvest]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const plant = (this._state.plants || []).find((p) => p.id === el.dataset.recordHarvest);
+        if (plant) {
+          this._modal = { type: "harvest", data: { plant, harvest: plant.harvest || null } };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-delete-harvest]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const harvestId = el.dataset.deleteHarvest;
+        this._openConfirm({
+          title: "🗑 Delete Harvest Record",
+          message: "Delete this harvest record and its curing jar logs?",
+          confirmLabel: "Delete Harvest",
+          onConfirm: async () => {
+            await this._api.deleteHarvest(harvestId);
+            await this._refreshState();
+            this._showToast("Harvest record deleted");
+          },
+        });
+      });
+    });
+
+    root.querySelectorAll("[data-add-curing]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const harvestId = el.dataset.addCuring;
+        const harvest = (this._state.harvests || []).find((h) => h.id === harvestId);
+        this._modal = {
+          type: "curing",
+          data: { harvest: harvest || { id: harvestId }, plantName: el.dataset.plantName || "" },
+        };
+        this._render();
+      });
+    });
+
+    root.querySelectorAll("[data-delete-curing]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const clogId = el.dataset.deleteCuring;
+        this._openConfirm({
+          title: "🗑 Delete Curing Entry",
+          message: "Delete this jar check / burp log?",
+          confirmLabel: "Delete Entry",
+          onConfirm: async () => {
+            await this._api.deleteCuringLog(clogId);
+            await this._refreshState();
+            this._showToast("Curing entry deleted");
+          },
+        });
+      });
+    });
+
+    root.querySelectorAll("[data-export-report-md]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        try {
+          const res = await this._api.exportPlantReport(el.dataset.exportReportMd);
+          downloadTextFile(`${res.filename_base}.md`, res.markdown, "text/markdown;charset=utf-8");
+          this._showToast("Downloaded Markdown grow report!");
+        } catch (err) {
+          this._showToast(`Export error: ${err.message || err}`, true);
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-export-report-json]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        try {
+          const res = await this._api.exportPlantReport(el.dataset.exportReportJson);
+          downloadTextFile(
+            `${res.filename_base}.json`,
+            JSON.stringify(res.json_data, null, 2),
+            "application/json;charset=utf-8"
+          );
+          this._showToast("Downloaded JSON grow report!");
+        } catch (err) {
+          this._showToast(`Export error: ${err.message || err}`, true);
+        }
+      });
+    });
+
     // Modal backdrop / close
     root.querySelectorAll("[data-close-modal]").forEach((el) => {
       el.addEventListener("click", (e) => {
@@ -1418,6 +1879,7 @@ class IGroPanel extends HTMLElement {
       const fd = new FormData(e.target);
       const data = Object.fromEntries(fd.entries());
       const numFields = [
+        "light_wattage",
         "leaf_temp_offset_c",
         "target_vpd_min",
         "target_vpd_max",
@@ -1788,6 +2250,92 @@ class IGroPanel extends HTMLElement {
         } catch (err) {
           this._showToast(`Error: ${err.message || err}`, true);
         }
+      }
+    });
+
+    // Harvest form submit
+    root.getElementById("harvest-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const { plant } = this._modal.data;
+      const data = {
+        harvested_at: fd.get("harvested_at") || null,
+        grow_cycle_id: fd.get("grow_cycle_id") || null,
+        cure_start_at: fd.get("cure_start_at") || null,
+        aroma_notes: fd.get("aroma_notes") || null,
+        effect_notes: fd.get("effect_notes") || null,
+        notes: fd.get("notes") || null,
+        set_plant_stage: fd.get("set_plant_stage") || null,
+        is_keeper: fd.get("is_keeper") !== null,
+      };
+      for (const ff of ["wet_weight_g", "dry_weight_g", "trim_weight_g", "cure_rh_pct", "light_wattage_override"]) {
+        const v = fd.get(ff);
+        data[ff] = v !== null && v !== "" ? parseFloat(v) : null;
+      }
+      for (const intF of ["dry_days", "rating"]) {
+        const v = fd.get(intF);
+        data[intF] = v !== null && v !== "" ? parseInt(v, 10) : null;
+      }
+      try {
+        await this._api.upsertHarvest(plant.id, data);
+        this._modal = null;
+        if (this._tab === "plants" && this._selectedPlantId === plant.id) {
+          this._plantSubTab = "harvest";
+        }
+        await this._refreshState();
+        this._showToast(`Saved harvest for ${plant.name}!`);
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Curing jar check form submit
+    root.getElementById("curing-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const { harvest } = this._modal.data;
+      const data = {
+        logged_at: fromLocalDatetimeInput(fd.get("logged_at")),
+        burped: fd.get("burped") !== null,
+        notes: fd.get("notes") || null,
+      };
+      for (const ff of ["jar_rh_pct", "jar_temp_c"]) {
+        const v = fd.get(ff);
+        data[ff] = v !== null && v !== "" ? parseFloat(v) : null;
+      }
+      try {
+        await this._api.addCuringLog(harvest.id, data);
+        this._modal = null;
+        await this._refreshState();
+        this._showToast("Jar check logged!");
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Grow Cycle form submit
+    root.getElementById("cycle-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const data = {
+        name: (fd.get("name") || "").trim(),
+        started_at: fd.get("started_at") || null,
+        ended_at: fd.get("ended_at") || null,
+        status: fd.get("status") || "active",
+        notes: fd.get("notes") || null,
+      };
+      try {
+        if (this._modal.data?.id) {
+          await this._api.updateGrowCycle(this._modal.data.id, data);
+          this._showToast("Grow cycle updated!");
+        } else {
+          await this._api.createGrowCycle(data);
+          this._showToast("Grow cycle created!");
+        }
+        this._modal = null;
+        await this._refreshState();
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
       }
     });
   }

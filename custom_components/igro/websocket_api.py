@@ -8,10 +8,15 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 import voluptuous as vol
 
-from .calculations import is_timestamp_in_future, is_timestamp_near_now
+from .calculations import (
+    compute_harvest_metrics,
+    is_timestamp_in_future,
+    is_timestamp_near_now,
+)
 from .const import (
     DOMAIN,
     ENVIRONMENT_TYPES,
+    EVENT_HARVEST_RECORDED,
     EVENT_LOG_CREATED,
     EVENT_STAGE_CHANGED,
     GROW_MEDIUMS,
@@ -64,6 +69,14 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_create_preset,
         ws_update_preset,
         ws_delete_preset,
+        ws_create_grow_cycle,
+        ws_update_grow_cycle,
+        ws_delete_grow_cycle,
+        ws_upsert_harvest,
+        ws_delete_harvest,
+        ws_add_curing_log,
+        ws_delete_curing_log,
+        ws_export_plant_report,
     ]
     for cmd in commands:
         websocket_api.async_register_command(hass, cmd)
@@ -96,6 +109,8 @@ async def ws_get_state(
             "scheduled_stage_changes": data.get("scheduled_stage_changes", []),
             "recent_photos": data.get("recent_photos", []),
             "nutrient_presets": data.get("nutrient_presets", []),
+            "grow_cycles": data.get("grow_cycles", []),
+            "harvests": data.get("harvests", []),
             "summary": data.get("summary", {}),
             "meta": {
                 "stages": GROW_STAGES,
@@ -936,3 +951,281 @@ async def ws_delete_preset(
     deleted = await coordinator.db.async_delete_nutrient_preset(msg["preset_id"])
     await coordinator.async_request_refresh()
     connection.send_result(msg["id"], {"deleted": deleted})
+
+
+# ------------------------------------------------------------------
+# Grow Cycles, Harvests, Curing & Export WS commands
+# ------------------------------------------------------------------
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/cycles/create",
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_create_grow_cycle(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Create a grow cycle."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    created = await coordinator.db.async_create_grow_cycle(msg["data"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"cycle": created})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/cycles/update",
+        vol.Required("cycle_id"): str,
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_update_grow_cycle(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update a grow cycle."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    updated = await coordinator.db.async_update_grow_cycle(
+        msg["cycle_id"], msg["data"]
+    )
+    if updated is None:
+        connection.send_error(msg["id"], "not_found", "Grow cycle not found")
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"cycle": updated})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/cycles/delete",
+        vol.Required("cycle_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_grow_cycle(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete a grow cycle."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    deleted = await coordinator.db.async_delete_grow_cycle(msg["cycle_id"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"deleted": deleted})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/harvests/upsert",
+        vol.Required("plant_id"): str,
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_upsert_harvest(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Record or update harvest & yield metrics for a plant."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    harvest = await coordinator.db.async_upsert_harvest(msg["plant_id"], msg["data"])
+    if harvest is None:
+        connection.send_error(msg["id"], "not_found", "Plant not found")
+        return
+    hass.bus.async_fire(
+        EVENT_HARVEST_RECORDED,
+        {
+            "harvest_id": harvest["id"],
+            "plant_id": msg["plant_id"],
+            "dry_weight_g": harvest.get("dry_weight_g"),
+            "wet_weight_g": harvest.get("wet_weight_g"),
+        },
+    )
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"harvest": harvest})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/harvests/delete",
+        vol.Required("harvest_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_harvest(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete a harvest record."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    deleted = await coordinator.db.async_delete_harvest(msg["harvest_id"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"deleted": deleted})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/curing/add",
+        vol.Required("harvest_id"): str,
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_add_curing_log(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Add a curing jar check / burp log entry."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    created = await coordinator.db.async_add_curing_log(msg["harvest_id"], msg["data"])
+    if created is None:
+        connection.send_error(msg["id"], "not_found", "Harvest not found")
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"curing_log": created})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/curing/delete",
+        vol.Required("curing_log_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_curing_log(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete a curing jar log entry."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    deleted = await coordinator.db.async_delete_curing_log(msg["curing_log_id"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"deleted": deleted})
+
+
+def _format_plant_report_markdown(report: dict[str, Any]) -> str:
+    """Format a plant's full grow & harvest summary as clean Markdown."""
+    plant = report["plant"]
+    env = report.get("environment")
+    cycle = report.get("grow_cycle")
+    harvest = report.get("harvest")
+    lines = [
+        f"# Grow Report: {plant['name']}",
+        "",
+        f"- **Strain:** {plant.get('strain') or '—'}",
+        f"- **Breeder:** {plant.get('breeder') or '—'}",
+        f"- **Type / Medium:** {plant.get('plant_type') or '—'} / {plant.get('medium') or '—'}",
+        f"- **Pot Size:** {plant.get('pot_size') or '—'}",
+        f"- **Environment:** {env['name'] if env else '—'}",
+        f"- **Grow Cycle:** {cycle['name'] if cycle else '—'}",
+        f"- **Started:** {plant.get('started_at') or '—'}",
+        f"- **Current Stage:** {plant.get('stage') or '—'}",
+        "",
+    ]
+    if harvest:
+        metrics = compute_harvest_metrics(
+            harvest,
+            env_light_wattage=env.get("light_wattage") if env else None,
+        )
+        lines.extend(
+            [
+                "## Harvest & Yield",
+                f"- **Harvested:** {harvest.get('harvested_at') or '—'}",
+                f"- **Wet Weight:** {harvest.get('wet_weight_g') if harvest.get('wet_weight_g') is not None else '—'} g",
+                f"- **Dry Weight:** {harvest.get('dry_weight_g') if harvest.get('dry_weight_g') is not None else '—'} g ({metrics.get('dry_weight_oz') or '—'} oz)",
+                f"- **Trim / Larf:** {harvest.get('trim_weight_g') if harvest.get('trim_weight_g') is not None else '—'} g",
+                f"- **Wet → Dry Retention:** {metrics.get('retention_pct') if metrics.get('retention_pct') is not None else '—'}%",
+                f"- **Efficiency:** {metrics.get('grams_per_watt') if metrics.get('grams_per_watt') is not None else '—'} g/W",
+                f"- **Rating:** {'★' * (harvest.get('rating') or 0) or '—'}{' (Keeper)' if harvest.get('is_keeper') else ''}",
+                f"- **Aroma:** {harvest.get('aroma_notes') or '—'}",
+                f"- **Effects:** {harvest.get('effect_notes') or '—'}",
+                "",
+            ]
+        )
+    if report.get("stage_history"):
+        lines.append("## Stage History")
+        for st in report["stage_history"]:
+            end = st.get("ended_at") or "Current"
+            note = f" — {st['notes']}" if st.get("notes") else ""
+            lines.append(f"- **{st['stage'].title()}**: {st['started_at']} → {end}{note}")
+        lines.append("")
+    if report.get("curing_logs"):
+        lines.append("## Curing Log")
+        for cl in report["curing_logs"]:
+            rh = f"{cl['jar_rh_pct']}% RH" if cl.get("jar_rh_pct") is not None else "—"
+            burp = "Burped" if cl.get("burped") else "Checked"
+            note = f" — {cl['notes']}" if cl.get("notes") else ""
+            lines.append(f"- {cl['logged_at']}: {rh} ({burp}){note}")
+        lines.append("")
+    if report.get("logs"):
+        lines.append(f"## Grow Journal ({len(report['logs'])} entries)")
+        for lg in report["logs"]:
+            title = lg.get("title") or lg.get("log_type", "note").title()
+            note = f": {lg['notes']}" if lg.get("notes") else ""
+            lines.append(f"- [{lg['logged_at']}] **{title}**{note}")
+    return "\n".join(lines) + "\n"
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/reports/export",
+        vol.Required("plant_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_export_plant_report(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Export a plant's full grow & harvest report in JSON and Markdown formats."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    report = await coordinator.db.async_get_plant_report_data(msg["plant_id"])
+    if report is None:
+        connection.send_error(msg["id"], "not_found", "Plant not found")
+        return
+    safe_slug = "".join(
+        c if c.isalnum() or c in ("-", "_") else "_"
+        for c in report["plant"]["name"].lower()
+    ).strip("_") or "plant"
+    connection.send_result(
+        msg["id"],
+        {
+            "filename_base": f"igro_report_{safe_slug}",
+            "json_data": report,
+            "markdown": _format_plant_report_markdown(report),
+        },
+    )
