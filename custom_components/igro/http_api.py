@@ -11,7 +11,6 @@ from typing import Any
 import uuid
 
 from aiohttp import web
-
 from homeassistant.components import camera
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant

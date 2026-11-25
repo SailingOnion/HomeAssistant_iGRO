@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-import sys
+from datetime import UTC, datetime
 from pathlib import Path
+import sys
 
 # Allow running tests without installing package
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -73,7 +73,7 @@ def test_effective_vpd_targets() -> None:
 
 
 def test_plant_day_metrics() -> None:
-    now = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
     metrics = compute_plant_day_metrics(
         {
             "started_at": "2026-05-01T12:00:00+00:00",
