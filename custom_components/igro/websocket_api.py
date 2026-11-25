@@ -51,6 +51,10 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_capture_camera_photo,
         ws_delete_photo,
         ws_set_cover_photo,
+        ws_list_presets,
+        ws_create_preset,
+        ws_update_preset,
+        ws_delete_preset,
     ]
     for cmd in commands:
         websocket_api.async_register_command(hass, cmd)
@@ -80,6 +84,7 @@ async def ws_get_state(
             "plants": list(data.get("plants", {}).values()),
             "recent_logs": data.get("recent_logs", []),
             "recent_photos": data.get("recent_photos", []),
+            "nutrient_presets": data.get("nutrient_presets", []),
             "summary": data.get("summary", {}),
             "meta": {
                 "stages": GROW_STAGES,
@@ -587,3 +592,99 @@ async def ws_set_cover_photo(
         return
     await coordinator.async_request_refresh()
     connection.send_result(msg["id"], {"plant": updated})
+
+
+# ------------------------------------------------------------------
+# Nutrient Presets WS commands
+# ------------------------------------------------------------------
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/presets/list",
+        vol.Optional("stage"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+async def ws_list_presets(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """List saved nutrient presets."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    presets = await coordinator.db.async_list_nutrient_presets(stage=msg.get("stage"))
+    connection.send_result(msg["id"], {"presets": presets})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/presets/create",
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_create_preset(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Create a nutrient preset recipe."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    created = await coordinator.db.async_create_nutrient_preset(msg["data"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"preset": created})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/presets/update",
+        vol.Required("preset_id"): str,
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_update_preset(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update a nutrient preset recipe."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    updated = await coordinator.db.async_update_nutrient_preset(
+        msg["preset_id"], msg["data"]
+    )
+    if updated is None:
+        connection.send_error(msg["id"], "not_found", "Preset not found")
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"preset": updated})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/presets/delete",
+        vol.Required("preset_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_preset(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete a nutrient preset."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    deleted = await coordinator.db.async_delete_nutrient_preset(msg["preset_id"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"deleted": deleted})

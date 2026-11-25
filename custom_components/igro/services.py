@@ -9,6 +9,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 import voluptuous as vol
 
+from .calculations import scale_nutrients_for_volume
 from .const import (
     DOMAIN,
     EVENT_LOG_CREATED,
@@ -46,6 +47,18 @@ def _resolve_plant_id(coordinator: IGroCoordinator, identifier: str) -> str:
     raise HomeAssistantError(f"Plant '{identifier}' not found")
 
 
+def _resolve_preset(
+    coordinator: IGroCoordinator, identifier: str
+) -> dict[str, object]:
+    """Resolve a nutrient preset by ID or case-insensitive name."""
+    presets = (coordinator.data or {}).get("nutrient_presets", [])
+    lowered = identifier.strip().lower()
+    for preset in presets:
+        if preset["id"] == identifier or preset["name"].strip().lower() == lowered:
+            return preset
+    raise HomeAssistantError(f"Nutrient preset '{identifier}' not found")
+
+
 async def async_register_services(hass: HomeAssistant) -> None:
     """Register iGro Home Assistant services."""
 
@@ -54,22 +67,45 @@ async def async_register_services(hass: HomeAssistant) -> None:
         data = dict(call.data)
         plant_ref = data.pop("plant", None)
         plant_id = _resolve_plant_id(coordinator, plant_ref) if plant_ref else None
+        preset_ref = data.pop("preset", None)
+        preset = _resolve_preset(coordinator, preset_ref) if preset_ref else None
+
+        nutrients = data.get("nutrients")
+        water_volume_ml = data.get("water_volume_ml")
+        title = data.get("title")
+        ph = data.get("ph")
+        ec = data.get("ec")
+        ppm = data.get("ppm")
+
+        if preset is not None:
+            if not nutrients:
+                nutrients = scale_nutrients_for_volume(
+                    preset.get("nutrients") or [], water_volume_ml
+                )
+            if not title:
+                title = f"Feed: {preset['name']}"
+            if ph is None:
+                ph = preset.get("target_ph")
+            if ec is None:
+                ec = preset.get("target_ec")
+            if ppm is None:
+                ppm = preset.get("target_ppm")
 
         payload = {
             "plant_id": plant_id,
             "environment_id": data.get("environment_id"),
             "log_type": data["log_type"],
-            "title": data.get("title"),
+            "title": title,
             "notes": data.get("notes"),
-            "water_volume_ml": data.get("water_volume_ml"),
-            "ph": data.get("ph"),
-            "ec": data.get("ec"),
-            "ppm": data.get("ppm"),
+            "water_volume_ml": water_volume_ml,
+            "ph": ph,
+            "ec": ec,
+            "ppm": ppm,
             "runoff_ph": data.get("runoff_ph"),
             "runoff_ec": data.get("runoff_ec"),
             "height_cm": data.get("height_cm"),
             "training_method": data.get("training_method"),
-            "nutrients": data.get("nutrients"),
+            "nutrients": nutrients,
         }
         env_readings = coordinator.get_environment_readings_for_plant(plant_id)
         payload.update(
@@ -167,6 +203,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 vol.Optional("height_cm"): vol.Coerce(float),
                 vol.Optional("training_method"): cv.string,
                 vol.Optional("nutrients"): list,
+                vol.Optional("preset"): cv.string,
             }
         ),
     )

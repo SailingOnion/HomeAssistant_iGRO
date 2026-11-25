@@ -6,23 +6,27 @@
 import {
   IGroApi,
   LOG_TYPE_META,
+  NUTRIENT_UNITS,
   STAGE_META,
   escapeHtml,
   formatDate,
   formatDateTime,
   formatRelative,
   formatTemp,
+  scaleNutrientsForVolume,
   stageBadgeHtml,
   vpdBadgeHtml,
-} from "./api.js?v=0.1.1";
+} from "./api.js?v=0.2.0";
 import {
   renderEnvironmentModal,
   renderLightboxModal,
   renderLogModal,
   renderPhotoModal,
   renderPlantModal,
-} from "./modals.js?v=0.1.1";
-import { PANEL_STYLES } from "./styles.js?v=0.1.1";
+  renderPresetModal,
+  renderScaledMixHtml,
+} from "./modals.js?v=0.2.0";
+import { PANEL_STYLES } from "./styles.js?v=0.2.0";
 
 class IGroPanel extends HTMLElement {
   constructor() {
@@ -36,6 +40,7 @@ class IGroPanel extends HTMLElement {
     this._tab = "overview"; // overview | plants | environments | journal | gallery
     this._selectedPlantId = null;
     this._plantSubTab = "journal"; // journal | photos | history
+    this._journalSubTab = "logs"; // logs | presets
     this._filters = {
       plantSearch: "",
       plantStage: "",
@@ -51,6 +56,7 @@ class IGroPanel extends HTMLElement {
       plants: [],
       recent_logs: [],
       recent_photos: [],
+      nutrient_presets: [],
       summary: {},
       meta: { temperature_unit: "°C" },
     };
@@ -222,6 +228,8 @@ class IGroPanel extends HTMLElement {
         modalHtml = renderEnvironmentModal(this._modal.data, this._state, this._haEntities);
       } else if (this._modal.type === "log") {
         modalHtml = renderLogModal(this._modal.data || {}, this._state);
+      } else if (this._modal.type === "preset") {
+        modalHtml = renderPresetModal(this._modal.data, this._state);
       } else if (this._modal.type === "photo") {
         modalHtml = renderPhotoModal(this._modal.data || {}, this._state, this._haEntities);
       } else if (this._modal.type === "lightbox") {
@@ -541,6 +549,15 @@ class IGroPanel extends HTMLElement {
           <div class="quick-actions">
             <button class="btn btn-primary btn-sm" data-plant-log="water">💧 Water</button>
             <button class="btn btn-primary btn-sm" data-plant-log="feed">🧪 Feed</button>
+            ${(() => {
+              const firstId = plant.suggested_preset_ids?.[0];
+              const topPreset = firstId
+                ? (this._state.nutrient_presets || []).find((pr) => pr.id === firstId)
+                : null;
+              return topPreset
+                ? `<button class="btn btn-sm" style="border-color:var(--igro-accent);color:var(--igro-accent);" data-apply-plant-preset="${escapeHtml(topPreset.id)}">⭐ ${escapeHtml(topPreset.name)}</button>`
+                : "";
+            })()}
             <button class="btn btn-sm" data-plant-log="training">✂️ Training</button>
             <button class="btn btn-sm" data-plant-log="measurement">📏 Measure</button>
             <button class="btn btn-sm" data-plant-log="note">📝 Note</button>
@@ -657,7 +674,14 @@ class IGroPanel extends HTMLElement {
     if (log.training_method) chips.push(`✂️ ${log.training_method}`);
     if (Array.isArray(log.nutrients)) {
       for (const n of log.nutrients) {
-        if (n?.name) chips.push(`🧪 ${n.name}${n.amount ? ` ${n.amount}${n.unit || ""}` : ""}`);
+        if (n?.name) {
+          const dose = n.amount ? ` ${n.amount}${n.unit || ""}` : "";
+          const total =
+            n.total_amount !== null && n.total_amount !== undefined && n.total_unit && n.total_unit !== n.unit
+              ? ` (${n.total_amount} ${n.total_unit})`
+              : "";
+          chips.push(`🧪 ${n.name}${dose}${total}`);
+        }
       }
     }
     if (log.vpd_kpa !== null && log.vpd_kpa !== undefined) {
@@ -685,32 +709,116 @@ class IGroPanel extends HTMLElement {
     `;
   }
 
+  _renderPresetCard(pr) {
+    const weekLabel =
+      pr.week_start || pr.week_end
+        ? `Wk ${pr.week_start ?? 1}${pr.week_end && pr.week_end !== pr.week_start ? `–${pr.week_end}` : ""}`
+        : null;
+    const nutrients = Array.isArray(pr.nutrients) ? pr.nutrients : [];
+    return `
+      <div class="card">
+        <div class="card-body">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+            <div>
+              <h3 class="plant-title" style="margin:0;">🧪 ${escapeHtml(pr.name)}</h3>
+              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">
+                ${pr.stage ? stageBadgeHtml(pr.stage) : `<span class="badge badge-muted">Any Stage</span>`}
+                ${weekLabel ? `<span class="badge badge-info">📅 ${escapeHtml(weekLabel)}</span>` : ""}
+              </div>
+            </div>
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-sm" data-edit-preset="${escapeHtml(pr.id)}" title="Edit preset">✏️</button>
+              <button class="btn btn-sm btn-danger" data-delete-preset="${escapeHtml(pr.id)}" title="Delete preset">🗑</button>
+            </div>
+          </div>
+
+          <div class="stat-chips" style="margin-top:12px;">
+            <div class="stat-chip">
+              <div class="stat-chip-label">Target pH</div>
+              <div class="stat-chip-val">${pr.target_ph ?? "—"}</div>
+            </div>
+            <div class="stat-chip">
+              <div class="stat-chip-label">Target EC</div>
+              <div class="stat-chip-val">${pr.target_ec ?? "—"}</div>
+            </div>
+            <div class="stat-chip">
+              <div class="stat-chip-label">Target PPM</div>
+              <div class="stat-chip-val">${pr.target_ppm ?? "—"}</div>
+            </div>
+          </div>
+
+          ${
+            nutrients.length
+              ? `<div class="log-chips" style="margin-top:12px;">
+                  ${nutrients
+                    .map(
+                      (n) =>
+                        `<span class="log-chip">${escapeHtml(n.name)}${n.amount ? ` · <strong>${escapeHtml(n.amount)} ${escapeHtml(n.unit || "")}</strong>` : ""}</span>`
+                    )
+                    .join("")}
+                </div>`
+              : `<p style="font-size:12px;color:var(--igro-text-muted);margin:10px 0 0;">No ingredients listed yet.</p>`
+          }
+          ${pr.notes ? `<p class="log-notes">${escapeHtml(pr.notes)}</p>` : ""}
+
+          <div style="margin-top:14px;display:flex;justify-content:flex-end;">
+            <button class="btn btn-primary btn-sm" data-use-preset="${escapeHtml(pr.id)}">🧪 Use in Feed Log</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   _renderJournal(unit) {
     const f = this._filters;
+    const presets = this._state.nutrient_presets || [];
+
+    const headerAction =
+      this._journalSubTab === "presets"
+        ? `<button class="btn btn-primary" id="btn-add-preset">+ New Preset</button>`
+        : `<button class="btn btn-primary" id="btn-add-log-2">+ New Entry</button>`;
+
+    const bodyHtml =
+      this._journalSubTab === "presets"
+        ? presets.length
+          ? `<div class="grid-cards">${presets.map((pr) => this._renderPresetCard(pr)).join("")}</div>`
+          : `<div class="empty-state">
+              <div class="empty-state-emoji">🧪</div>
+              <h3>No nutrient presets saved yet</h3>
+              <p>Save reusable nutrient recipes (e.g. Veg Week 2–4 Base) with target pH/EC and auto-scale dosages for any bucket volume.</p>
+              <button class="btn btn-primary" id="btn-empty-preset">+ Create First Preset</button>
+            </div>`
+        : `
+          <div class="filter-bar">
+            <select class="select" id="filter-log-plant">
+              <option value="">All Plants</option>
+              ${(this._state.plants || []).map((p) => `<option value="${escapeHtml(p.id)}" ${f.logPlant === p.id ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}
+            </select>
+            <select class="select" id="filter-log-type">
+              <option value="">All Action Types</option>
+              ${Object.entries(LOG_TYPE_META).map(([k, v]) => `<option value="${k}" ${f.logType === k ? "selected" : ""}>${v.icon} ${v.label}</option>`).join("")}
+            </select>
+          </div>
+          ${
+            this._journalLogs.length
+              ? `<div class="timeline">${this._journalLogs.map((l) => this._renderLogItem(l, unit, true)).join("")}</div>`
+              : `<div class="empty-state">
+                  <div class="empty-state-emoji">📓</div>
+                  <h3>No journal entries found</h3>
+                  <p>Log waterings, nutrient mixes with pH & EC, LST/topping sessions, or measurements.</p>
+                </div>`
+          }
+        `;
+
     return `
       <div class="section-header" style="margin-top:0;">
-        <h2 class="section-title">📓 Grow Journal</h2>
-        <button class="btn btn-primary" id="btn-add-log-2">+ New Entry</button>
+        <div class="nav-tabs">
+          <button class="nav-tab ${this._journalSubTab === "logs" ? "active" : ""}" data-journal-subtab="logs">📓 Activity Log</button>
+          <button class="nav-tab ${this._journalSubTab === "presets" ? "active" : ""}" data-journal-subtab="presets">🧪 Nutrient Presets (${presets.length})</button>
+        </div>
+        ${headerAction}
       </div>
-      <div class="filter-bar">
-        <select class="select" id="filter-log-plant">
-          <option value="">All Plants</option>
-          ${(this._state.plants || []).map((p) => `<option value="${escapeHtml(p.id)}" ${f.logPlant === p.id ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}
-        </select>
-        <select class="select" id="filter-log-type">
-          <option value="">All Action Types</option>
-          ${Object.entries(LOG_TYPE_META).map(([k, v]) => `<option value="${k}" ${f.logType === k ? "selected" : ""}>${v.icon} ${v.label}</option>`).join("")}
-        </select>
-      </div>
-      ${
-        this._journalLogs.length
-          ? `<div class="timeline">${this._journalLogs.map((l) => this._renderLogItem(l, unit, true)).join("")}</div>`
-          : `<div class="empty-state">
-              <div class="empty-state-emoji">📓</div>
-              <h3>No journal entries found</h3>
-              <p>Log waterings, nutrient mixes with pH & EC, LST/topping sessions, or measurements.</p>
-            </div>`
-      }
+      ${bodyHtml}
     `;
   }
 
@@ -853,6 +961,78 @@ class IGroPanel extends HTMLElement {
     root.querySelectorAll("[data-plant-log]").forEach((el) => {
       el.addEventListener("click", () => {
         openNewLog({ plant_id: this._selectedPlantId, log_type: el.dataset.plantLog });
+      });
+    });
+
+    root.querySelectorAll("[data-apply-plant-preset]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const pr = (this._state.nutrient_presets || []).find((p) => p.id === el.dataset.applyPlantPreset);
+        if (!pr) return;
+        openNewLog({
+          plant_id: this._selectedPlantId,
+          log_type: "feed",
+          preset_id: pr.id,
+          title: pr.name,
+          ph: pr.target_ph,
+          ec: pr.target_ec,
+          ppm: pr.target_ppm,
+          nutrients: (pr.nutrients || []).map((n) => ({ ...n })),
+          notes: pr.notes || "",
+        });
+      });
+    });
+
+    // Journal sub-tabs & nutrient preset actions
+    root.querySelectorAll("[data-journal-subtab]").forEach((el) => {
+      el.addEventListener("click", () => {
+        this._journalSubTab = el.dataset.journalSubtab;
+        this._render();
+      });
+    });
+
+    const openNewPreset = () => {
+      this._modal = { type: "preset", data: null };
+      this._render();
+    };
+    root.getElementById("btn-add-preset")?.addEventListener("click", openNewPreset);
+    root.getElementById("btn-empty-preset")?.addEventListener("click", openNewPreset);
+
+    root.querySelectorAll("[data-edit-preset]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const pr = (this._state.nutrient_presets || []).find((p) => p.id === el.dataset.editPreset);
+        if (pr) {
+          this._modal = { type: "preset", data: pr };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-delete-preset]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const pr = (this._state.nutrient_presets || []).find((p) => p.id === el.dataset.deletePreset);
+        if (pr && confirm(`Delete nutrient preset "${pr.name}"?`)) {
+          await this._api.deletePreset(pr.id);
+          await this._refreshState();
+          this._showToast(`Deleted preset "${pr.name}"`);
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-use-preset]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const pr = (this._state.nutrient_presets || []).find((p) => p.id === el.dataset.usePreset);
+        if (!pr) return;
+        openNewLog({
+          plant_id: this._filters.logPlant || this._state.plants?.[0]?.id || "",
+          log_type: "feed",
+          preset_id: pr.id,
+          title: pr.name,
+          ph: pr.target_ph,
+          ec: pr.target_ec,
+          ppm: pr.target_ppm,
+          nutrients: (pr.nutrients || []).map((n) => ({ ...n })),
+          notes: pr.notes || "",
+        });
       });
     });
 
@@ -1063,7 +1243,28 @@ class IGroPanel extends HTMLElement {
       }
     });
 
-    // Log form interactive chips & nutrient rows
+    // Helper to collect nutrient rows from either #log-form or #preset-form
+    const collectNutrientRows = (container) => {
+      const nutrients = [];
+      container?.querySelectorAll(".nutrient-row").forEach((row) => {
+        const name = row.querySelector("[name='nut_name']")?.value?.trim();
+        const amount = row.querySelector("[name='nut_amount']")?.value?.trim();
+        const unit = row.querySelector("[name='nut_unit']")?.value?.trim() || "mL/L";
+        if (name) nutrients.push({ name, amount, unit });
+      });
+      return nutrients;
+    };
+
+    const updateScaledMixPreview = () => {
+      const logForm = root.getElementById("log-form");
+      const preview = root.getElementById("scaled-mix-preview");
+      if (!logForm || !preview) return;
+      const vol = logForm.querySelector("[name='water_volume_ml']")?.value;
+      const nutrients = collectNutrientRows(logForm);
+      preview.innerHTML = renderScaledMixHtml(nutrients, vol);
+    };
+
+    // Log form interactive chips, preset picker & nutrient rows
     root.querySelectorAll("[data-log-type]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const plantSel = root.querySelector("#log-form [name='plant_id']")?.value || "";
@@ -1076,6 +1277,30 @@ class IGroPanel extends HTMLElement {
       });
     });
 
+    root.getElementById("log-preset-select")?.addEventListener("change", (e) => {
+      const presetId = e.target.value;
+      if (!presetId) return;
+      const pr = (this._state.nutrient_presets || []).find((p) => p.id === presetId);
+      if (!pr) return;
+      const form = root.getElementById("log-form");
+      const volVal = form?.querySelector("[name='water_volume_ml']")?.value || "";
+      const plantSel = form?.querySelector("[name='plant_id']")?.value || "";
+      this._modal.data = {
+        ...this._modal.data,
+        plant_id: plantSel,
+        log_type: "feed",
+        preset_id: pr.id,
+        title: pr.name,
+        water_volume_ml: volVal !== "" ? parseFloat(volVal) : null,
+        ph: pr.target_ph,
+        ec: pr.target_ec,
+        ppm: pr.target_ppm,
+        nutrients: (pr.nutrients || []).map((n) => ({ ...n })),
+        notes: pr.notes || "",
+      };
+      this._render();
+    });
+
     root.querySelector("[data-add-nutrient]")?.addEventListener("click", () => {
       const list = root.getElementById("nutrients-list");
       if (!list) return;
@@ -1083,17 +1308,43 @@ class IGroPanel extends HTMLElement {
       row.className = "nutrient-row";
       row.innerHTML = `
         <input class="input" name="nut_name" placeholder="Nutrient name" />
-        <input class="input" name="nut_amount" placeholder="Qty" />
-        <input class="input" name="nut_unit" placeholder="mL/L" value="mL/L" />
+        <input class="input" type="number" step="0.1" name="nut_amount" placeholder="Qty" />
+        <select class="select" name="nut_unit">${NUTRIENT_UNITS.map((u) => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join("")}</select>
         <button type="button" class="btn btn-sm btn-danger">✕</button>
       `;
-      row.querySelector("button").addEventListener("click", () => row.remove());
+      row.querySelector("button").addEventListener("click", () => {
+        row.remove();
+        updateScaledMixPreview();
+      });
       list.appendChild(row);
     });
 
     root.querySelectorAll("[data-remove-nutrient]").forEach((btn) => {
-      btn.addEventListener("click", () => btn.closest(".nutrient-row")?.remove());
+      btn.addEventListener("click", () => {
+        btn.closest(".nutrient-row")?.remove();
+        updateScaledMixPreview();
+      });
     });
+
+    // Live auto-scaling mix preview inside #log-form
+    const logFormEl = root.getElementById("log-form");
+    if (logFormEl) {
+      logFormEl.addEventListener("input", updateScaledMixPreview);
+      logFormEl.addEventListener("change", (e) => {
+        if (e.target.name === "plant_id") {
+          const volVal = logFormEl.querySelector("[name='water_volume_ml']")?.value || "";
+          this._modal.data = {
+            ...this._modal.data,
+            plant_id: e.target.value,
+            water_volume_ml: volVal !== "" ? parseFloat(volVal) : null,
+            nutrients: collectNutrientRows(logFormEl),
+          };
+          this._render();
+        } else {
+          updateScaledMixPreview();
+        }
+      });
+    }
 
     root.getElementById("log-form")?.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -1110,21 +1361,51 @@ class IGroPanel extends HTMLElement {
         const val = fd.get(nf);
         if (val !== null && val !== "") data[nf] = parseFloat(val);
       }
-      // Collect nutrient rows
-      const nutrients = [];
-      form.querySelectorAll(".nutrient-row").forEach((row) => {
-        const name = row.querySelector("[name='nut_name']")?.value?.trim();
-        const amount = row.querySelector("[name='nut_amount']")?.value?.trim();
-        const unit = row.querySelector("[name='nut_unit']")?.value?.trim();
-        if (name) nutrients.push({ name, amount, unit });
-      });
-      if (nutrients.length) data.nutrients = nutrients;
+      const rawNutrients = collectNutrientRows(form);
+      if (rawNutrients.length) {
+        data.nutrients = scaleNutrientsForVolume(rawNutrients, data.water_volume_ml);
+      }
 
       try {
         await this._api.createLog(data);
         this._modal = null;
         await this._refreshState();
         this._showToast("Journal entry saved!");
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Nutrient Preset form submit
+    root.getElementById("preset-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const form = e.target;
+      const fd = new FormData(form);
+      const data = {
+        name: (fd.get("name") || "").trim(),
+        stage: fd.get("stage") || null,
+        notes: fd.get("notes") || null,
+        nutrients: collectNutrientRows(form),
+      };
+      for (const intF of ["week_start", "week_end"]) {
+        const val = fd.get(intF);
+        data[intF] = val !== null && val !== "" ? parseInt(val, 10) : null;
+      }
+      for (const floatF of ["target_ph", "target_ec", "target_ppm"]) {
+        const val = fd.get(floatF);
+        data[floatF] = val !== null && val !== "" ? parseFloat(val) : null;
+      }
+
+      try {
+        if (this._modal.data?.id) {
+          await this._api.updatePreset(this._modal.data.id, data);
+          this._showToast("Nutrient preset updated!");
+        } else {
+          await this._api.createPreset(data);
+          this._showToast("Nutrient preset created!");
+        }
+        this._modal = null;
+        await this._refreshState();
       } catch (err) {
         this._showToast(`Error: ${err.message || err}`, true);
       }

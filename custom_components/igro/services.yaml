@@ -75,6 +75,12 @@ log_action:
       example: "LST"
       selector:
         text:
+    preset:
+      name: Nutrient preset
+      description: Optional saved nutrient preset ID or name to auto-fill nutrients, target pH, and target EC.
+      example: "Veg Week 3 Base"
+      selector:
+        text:
 
 set_stage:
   name: Set plant stage

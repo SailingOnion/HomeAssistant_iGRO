@@ -20,6 +20,7 @@ from .calculations import (
     days_since,
     evaluate_range_status,
     get_effective_vpd_targets,
+    suggest_presets_for_plant,
     to_celsius,
 )
 from .const import (
@@ -130,6 +131,7 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         raw_plants: list[dict[str, Any]] = snapshot["plants"]
         stage_rows: list[dict[str, Any]] = snapshot["stage_history"]
         plant_stats: dict[str, dict[str, Any]] = snapshot["plant_stats"]
+        nutrient_presets: list[dict[str, Any]] = snapshot.get("nutrient_presets", [])
 
         # Group stage history by plant
         history_by_plant: dict[str, list[dict[str, Any]]] = {}
@@ -168,6 +170,10 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 photo_url(cover["id"], cover["access_token"]) if cover else None
             )
 
+            suggested_presets = suggest_presets_for_plant(
+                {**p, **day_metrics}, nutrient_presets
+            )
+
             enriched_plant = {
                 **p,
                 **day_metrics,
@@ -190,6 +196,7 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "photo_count": stats.get("photo_count", 0),
                 "cover_photo_url": cover_url,
                 "stage_history": history_by_plant.get(pid, []),
+                "suggested_preset_ids": [pr["id"] for pr in suggested_presets],
             }
             plants_map[pid] = enriched_plant
 
@@ -316,6 +323,7 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "plants": plants_map,
             "recent_logs": recent_logs,
             "recent_photos": recent_photos,
+            "nutrient_presets": nutrient_presets,
             "summary": {
                 "active_plants": active_plant_count,
                 "total_plants": len(plants_map),
