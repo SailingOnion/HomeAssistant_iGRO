@@ -267,3 +267,50 @@ def suggest_presets_for_plant(
 
     scored.sort(key=lambda t: (t[0], t[1]))
     return [item[2] for item in scored]
+
+
+GRAMS_PER_OUNCE = 28.349523125
+
+
+def compute_harvest_metrics(
+    harvest: dict[str, Any],
+    env_light_wattage: float | None = None,
+    env_plant_count: int = 1,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Compute derived harvest yield metrics (retention %, oz, g/W, curing days)."""
+    wet_g = harvest.get("wet_weight_g")
+    dry_g = harvest.get("dry_weight_g")
+    trim_g = harvest.get("trim_weight_g")
+
+    retention_pct: float | None = None
+    if wet_g is not None and dry_g is not None and wet_g > 0:
+        retention_pct = round((dry_g / wet_g) * 100.0, 1)
+
+    dry_oz: float | None = (
+        round(dry_g / GRAMS_PER_OUNCE, 2) if dry_g is not None else None
+    )
+
+    total_dry_output_g: float | None = None
+    if dry_g is not None or trim_g is not None:
+        total_dry_output_g = round((dry_g or 0.0) + (trim_g or 0.0), 1)
+
+    wattage = harvest.get("light_wattage_override")
+    if wattage is None and env_light_wattage is not None and env_light_wattage > 0:
+        divisor = max(1, env_plant_count)
+        wattage = env_light_wattage / divisor
+
+    grams_per_watt: float | None = None
+    if dry_g is not None and wattage is not None and wattage > 0:
+        grams_per_watt = round(dry_g / wattage, 2)
+
+    curing_days = days_since(harvest.get("cure_start_at"), now)
+
+    return {
+        "retention_pct": retention_pct,
+        "dry_weight_oz": dry_oz,
+        "total_dry_output_g": total_dry_output_g,
+        "effective_wattage": round(wattage, 1) if wattage is not None else None,
+        "grams_per_watt": grams_per_watt,
+        "curing_days": curing_days,
+    }

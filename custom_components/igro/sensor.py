@@ -13,7 +13,13 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfLength, UnitOfTemperature, UnitOfTime
+from homeassistant.const import (
+    PERCENTAGE,
+    UnitOfLength,
+    UnitOfMass,
+    UnitOfTemperature,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
@@ -43,6 +49,10 @@ SUMMARY_SENSORS: tuple[IGroSensorDesc, ...] = (
             "total_plants": d.get("summary", {}).get("total_plants", 0),
             "total_logs": d.get("summary", {}).get("total_logs", 0),
             "total_photos": d.get("summary", {}).get("total_photos", 0),
+            "total_harvests": d.get("summary", {}).get("total_harvests", 0),
+            "total_dry_yield_g": d.get("summary", {}).get("total_dry_yield_g", 0),
+            "avg_dry_yield_g": d.get("summary", {}).get("avg_dry_yield_g"),
+            "keeper_count": d.get("summary", {}).get("keeper_count", 0),
         },
     ),
     IGroSensorDesc(
@@ -58,6 +68,20 @@ SUMMARY_SENSORS: tuple[IGroSensorDesc, ...] = (
         icon="mdi:alert-circle-outline",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: d.get("summary", {}).get("alerts_count", 0),
+    ),
+    IGroSensorDesc(
+        key="total_dry_yield",
+        name="Total Dry Yield",
+        icon="mdi:scale",
+        device_class=SensorDeviceClass.WEIGHT,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement=UnitOfMass.GRAMS,
+        value_fn=lambda d: d.get("summary", {}).get("total_dry_yield_g", 0),
+        attrs_fn=lambda d: {
+            "total_harvests": d.get("summary", {}).get("total_harvests", 0),
+            "avg_dry_yield_g": d.get("summary", {}).get("avg_dry_yield_g"),
+            "keeper_count": d.get("summary", {}).get("keeper_count", 0),
+        },
     ),
 )
 
@@ -206,6 +230,24 @@ PLANT_SENSORS: tuple[IGroSensorDesc, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfLength.CENTIMETERS,
         value_fn=lambda p: p.get("latest_height_cm"),
+    ),
+    IGroSensorDesc(
+        key="dry_yield",
+        name="Dry Yield",
+        icon="mdi:scale",
+        device_class=SensorDeviceClass.WEIGHT,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfMass.GRAMS,
+        value_fn=lambda p: (p.get("harvest") or {}).get("dry_weight_g"),
+        attrs_fn=lambda p: {
+            "wet_weight_g": (p.get("harvest") or {}).get("wet_weight_g"),
+            "trim_weight_g": (p.get("harvest") or {}).get("trim_weight_g"),
+            "retention_pct": (p.get("harvest") or {}).get("retention_pct"),
+            "grams_per_watt": (p.get("harvest") or {}).get("grams_per_watt"),
+            "cure_rh_pct": (p.get("harvest") or {}).get("cure_rh_pct"),
+            "rating": (p.get("harvest") or {}).get("rating"),
+            "is_keeper": (p.get("harvest") or {}).get("is_keeper"),
+        },
     ),
 )
 

@@ -142,6 +142,7 @@ VPD_STATUS_UNKNOWN = "unknown"
 EVENT_LOG_CREATED = f"{DOMAIN}_log_created"
 EVENT_STAGE_CHANGED = f"{DOMAIN}_stage_changed"
 EVENT_PHOTO_ADDED = f"{DOMAIN}_photo_added"
+EVENT_HARVEST_RECORDED = f"{DOMAIN}_harvest_recorded"
 
 # Services
 SERVICE_LOG_ACTION = "log_action"
@@ -149,6 +150,7 @@ SERVICE_ADVANCE_STAGE = "advance_stage"
 SERVICE_SET_STAGE = "set_stage"
 SERVICE_CAPTURE_PHOTO = "capture_photo"
 SERVICE_CREATE_PLANT = "create_plant"
+SERVICE_RECORD_HARVEST = "record_harvest"
 
 # Allowed photo MIME types / extensions
 ALLOWED_IMAGE_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png", ".webp", ".gif"}

@@ -16,6 +16,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from .calculations import (
     calculate_dew_point_c,
     calculate_vpd_kpa,
+    compute_harvest_metrics,
     compute_plant_day_metrics,
     days_since,
     evaluate_range_status,
@@ -148,8 +149,11 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         raw_sched_stages: list[dict[str, Any]] = snapshot.get(
             "scheduled_stage_changes", []
         )
+        raw_cycles: list[dict[str, Any]] = snapshot.get("grow_cycles", [])
+        raw_harvests: list[dict[str, Any]] = snapshot.get("harvests", [])
+        raw_curing_logs: list[dict[str, Any]] = snapshot.get("curing_logs", [])
 
-        # Group stage history & pending scheduled stage changes by plant
+        # Group stage history, scheduled stage changes, and curing logs
         history_by_plant: dict[str, list[dict[str, Any]]] = {}
         for row in stage_rows:
             history_by_plant.setdefault(row["plant_id"], []).append(row)
@@ -157,6 +161,25 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         sched_by_plant: dict[str, list[dict[str, Any]]] = {}
         for sched in raw_sched_stages:
             sched_by_plant.setdefault(sched["plant_id"], []).append(sched)
+
+        curing_by_harvest: dict[str, list[dict[str, Any]]] = {}
+        for cl in raw_curing_logs:
+            curing_by_harvest.setdefault(cl["harvest_id"], []).append(cl)
+
+        cycle_name_map: dict[str, str] = {c["id"]: c["name"] for c in raw_cycles}
+        env_wattage_map: dict[str, float | None] = {
+            e["id"]: e.get("light_wattage") for e in raw_envs
+        }
+        env_total_plant_counts: dict[str, int] = {}
+        for p in raw_plants:
+            if p.get("environment_id"):
+                env_total_plant_counts[p["environment_id"]] = (
+                    env_total_plant_counts.get(p["environment_id"], 0) + 1
+                )
+
+        harvest_by_plant: dict[str, dict[str, Any]] = {}
+        for h in raw_harvests:
+            harvest_by_plant[h["plant_id"]] = h
 
         # Group plants by environment
         plants_by_env: dict[str, list[dict[str, Any]]] = {}
@@ -194,10 +217,36 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 {**p, **day_metrics}, nutrient_presets
             )
 
+            raw_harvest = harvest_by_plant.get(pid)
+            enriched_harvest: dict[str, Any] | None = None
+            if raw_harvest:
+                env_id = p.get("environment_id")
+                h_metrics = compute_harvest_metrics(
+                    raw_harvest,
+                    env_light_wattage=env_wattage_map.get(env_id or ""),
+                    env_plant_count=env_total_plant_counts.get(env_id or "", 1),
+                )
+                enriched_harvest = {
+                    **raw_harvest,
+                    **h_metrics,
+                    "is_keeper": bool(raw_harvest.get("is_keeper")),
+                    "curing_logs": curing_by_harvest.get(raw_harvest["id"], []),
+                    "plant_name": p["name"],
+                    "strain": p.get("strain"),
+                    "breeder": p.get("breeder"),
+                    "medium": p.get("medium"),
+                    "total_days": day_metrics.get("total_days"),
+                    "cover_photo_url": cover_url,
+                    "grow_cycle_name": cycle_name_map.get(
+                        raw_harvest.get("grow_cycle_id") or p.get("grow_cycle_id") or ""
+                    ),
+                }
+
             enriched_plant = {
                 **p,
                 **day_metrics,
                 "environment_name": env_name_map.get(p.get("environment_id") or ""),
+                "grow_cycle_name": cycle_name_map.get(p.get("grow_cycle_id") or ""),
                 "effective_camera_entity_id": (
                     p.get("camera_entity_id")
                     or env_camera_map.get(p.get("environment_id") or "")
@@ -219,6 +268,7 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "stage_history": history_by_plant.get(pid, []),
                 "scheduled_stage_changes": sched_by_plant.get(pid, []),
                 "suggested_preset_ids": [pr["id"] for pr in suggested_presets],
+                "harvest": enriched_harvest,
             }
             plants_map[pid] = enriched_plant
 
@@ -361,6 +411,53 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for sc in raw_sched_stages
         ]
 
+        # Collect enriched harvests and grow cycle aggregates
+        enriched_harvests = [
+            plants_map[h["plant_id"]]["harvest"]
+            for h in raw_harvests
+            if h["plant_id"] in plants_map and plants_map[h["plant_id"]].get("harvest")
+        ]
+        dry_weights = [
+            h["dry_weight_g"]
+            for h in enriched_harvests
+            if h.get("dry_weight_g") is not None
+        ]
+        total_dry_yield_g = round(sum(dry_weights), 1)
+        avg_dry_yield_g = (
+            round(total_dry_yield_g / len(dry_weights), 1) if dry_weights else None
+        )
+        keeper_count = sum(1 for h in enriched_harvests if h.get("is_keeper"))
+
+        enriched_cycles = []
+        for cyc in raw_cycles:
+            cid = cyc["id"]
+            cyc_plants = [p for p in plants_map.values() if p.get("grow_cycle_id") == cid]
+            cyc_harvests = [
+                h
+                for h in enriched_harvests
+                if h.get("grow_cycle_id") == cid
+                or (
+                    h.get("plant_id") in plants_map
+                    and plants_map[h["plant_id"]].get("grow_cycle_id") == cid
+                )
+            ]
+            cyc_dry = round(
+                sum(
+                    h["dry_weight_g"]
+                    for h in cyc_harvests
+                    if h.get("dry_weight_g") is not None
+                ),
+                1,
+            )
+            enriched_cycles.append(
+                {
+                    **cyc,
+                    "plant_count": len(cyc_plants),
+                    "harvest_count": len(cyc_harvests),
+                    "total_dry_yield_g": cyc_dry,
+                }
+            )
+
         self._rebind_state_listeners(tracked_entity_ids)
 
         return {
@@ -371,6 +468,8 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "scheduled_stage_changes": scheduled_stage_changes,
             "recent_photos": recent_photos,
             "nutrient_presets": nutrient_presets,
+            "grow_cycles": enriched_cycles,
+            "harvests": enriched_harvests,
             "summary": {
                 "active_plants": active_plant_count,
                 "total_plants": len(plants_map),
@@ -378,6 +477,11 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "alerts_count": alerts_count,
                 "total_logs": snapshot["totals"]["logs"],
                 "total_photos": snapshot["totals"]["photos"],
+                "total_harvests": len(enriched_harvests),
+                "total_dry_yield_g": total_dry_yield_g,
+                "avg_dry_yield_g": avg_dry_yield_g,
+                "keeper_count": keeper_count,
+                "total_grow_cycles": len(enriched_cycles),
             },
         }
 

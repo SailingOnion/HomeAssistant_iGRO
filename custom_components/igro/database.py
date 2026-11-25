@@ -25,7 +25,7 @@ from .const import (
     STAGE_GERMINATION,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def utc_now_iso() -> str:
@@ -109,6 +109,7 @@ class IGroDatabase:
                     env_type TEXT NOT NULL DEFAULT 'tent',
                     dimensions TEXT,
                     light_schedule TEXT,
+                    light_wattage REAL,
                     temp_entity_id TEXT,
                     humidity_entity_id TEXT,
                     co2_entity_id TEXT,
@@ -137,6 +138,7 @@ class IGroDatabase:
                     medium TEXT NOT NULL DEFAULT 'soil',
                     pot_size TEXT,
                     environment_id TEXT,
+                    grow_cycle_id TEXT,
                     stage TEXT NOT NULL DEFAULT 'germination',
                     started_at TEXT NOT NULL,
                     stage_started_at TEXT NOT NULL,
@@ -233,6 +235,52 @@ class IGroDatabase:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS grow_cycles (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS harvests (
+                    id TEXT PRIMARY KEY,
+                    plant_id TEXT NOT NULL UNIQUE,
+                    grow_cycle_id TEXT,
+                    harvested_at TEXT NOT NULL,
+                    wet_weight_g REAL,
+                    dry_weight_g REAL,
+                    trim_weight_g REAL,
+                    dry_days INTEGER,
+                    cure_start_at TEXT,
+                    cure_rh_pct REAL,
+                    light_wattage_override REAL,
+                    aroma_notes TEXT,
+                    effect_notes TEXT,
+                    rating INTEGER,
+                    is_keeper INTEGER NOT NULL DEFAULT 0,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (plant_id) REFERENCES plants(id) ON DELETE CASCADE,
+                    FOREIGN KEY (grow_cycle_id) REFERENCES grow_cycles(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS curing_logs (
+                    id TEXT PRIMARY KEY,
+                    harvest_id TEXT NOT NULL,
+                    logged_at TEXT NOT NULL,
+                    jar_rh_pct REAL,
+                    jar_temp_c REAL,
+                    burped INTEGER NOT NULL DEFAULT 1,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (harvest_id) REFERENCES harvests(id) ON DELETE CASCADE
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_plants_env ON plants(environment_id);
                 CREATE INDEX IF NOT EXISTS idx_stage_history_plant ON stage_history(plant_id, started_at);
                 CREATE INDEX IF NOT EXISTS idx_logs_plant_logged ON logs(plant_id, logged_at DESC);
@@ -242,9 +290,11 @@ class IGroDatabase:
                 CREATE INDEX IF NOT EXISTS idx_photos_taken ON photos(taken_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_presets_stage ON nutrient_presets(stage, week_start);
                 CREATE INDEX IF NOT EXISTS idx_sched_stage_pending ON scheduled_stage_changes(status, scheduled_for);
+                CREATE INDEX IF NOT EXISTS idx_harvests_date ON harvests(harvested_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_curing_harvest ON curing_logs(harvest_id, logged_at DESC);
                 """
             )
-            # Safe additive migrations for pre-v3 databases
+            # Safe additive migrations for pre-v4 databases
             log_cols = {
                 r["name"] for r in conn.execute("PRAGMA table_info(logs)").fetchall()
             }
@@ -252,6 +302,17 @@ class IGroDatabase:
                 conn.execute(
                     "ALTER TABLE logs ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'"
                 )
+            env_cols = {
+                r["name"]
+                for r in conn.execute("PRAGMA table_info(environments)").fetchall()
+            }
+            if "light_wattage" not in env_cols:
+                conn.execute("ALTER TABLE environments ADD COLUMN light_wattage REAL")
+            plant_cols = {
+                r["name"] for r in conn.execute("PRAGMA table_info(plants)").fetchall()
+            }
+            if "grow_cycle_id" not in plant_cols:
+                conn.execute("ALTER TABLE plants ADD COLUMN grow_cycle_id TEXT")
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
@@ -327,6 +388,24 @@ class IGroDatabase:
                     SELECT * FROM nutrient_presets
                     ORDER BY stage IS NULL ASC, stage ASC, week_start IS NULL ASC, week_start ASC, name ASC
                     """
+                ).fetchall()
+            ]
+            grow_cycles = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM grow_cycles ORDER BY started_at DESC, created_at DESC"
+                ).fetchall()
+            ]
+            harvests = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM harvests ORDER BY harvested_at DESC, created_at DESC"
+                ).fetchall()
+            ]
+            curing_logs = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM curing_logs ORDER BY logged_at DESC, created_at DESC"
                 ).fetchall()
             ]
 
@@ -438,6 +517,9 @@ class IGroDatabase:
                 "scheduled_stage_changes": scheduled_stage_changes,
                 "recent_photos": recent_photos,
                 "nutrient_presets": nutrient_presets,
+                "grow_cycles": grow_cycles,
+                "harvests": harvests,
+                "curing_logs": curing_logs,
                 "totals": {
                     "logs": total_logs,
                     "photos": total_photos,
@@ -460,6 +542,7 @@ class IGroDatabase:
             "env_type": data.get("env_type") or "tent",
             "dimensions": data.get("dimensions"),
             "light_schedule": data.get("light_schedule") or "18/6",
+            "light_wattage": data.get("light_wattage"),
             "temp_entity_id": data.get("temp_entity_id") or None,
             "humidity_entity_id": data.get("humidity_entity_id") or None,
             "co2_entity_id": data.get("co2_entity_id") or None,
@@ -505,6 +588,7 @@ class IGroDatabase:
             "env_type",
             "dimensions",
             "light_schedule",
+            "light_wattage",
             "temp_entity_id",
             "humidity_entity_id",
             "co2_entity_id",
@@ -583,6 +667,7 @@ class IGroDatabase:
             "medium": data.get("medium") or "soil",
             "pot_size": data.get("pot_size") or None,
             "environment_id": data.get("environment_id") or None,
+            "grow_cycle_id": data.get("grow_cycle_id") or None,
             "stage": stage,
             "started_at": started_at,
             "stage_started_at": stage_started_at,
@@ -638,6 +723,7 @@ class IGroDatabase:
             "medium",
             "pot_size",
             "environment_id",
+            "grow_cycle_id",
             "started_at",
             "stage_started_at",
             "soil_moisture_entity_id",
@@ -1512,3 +1598,335 @@ class IGroDatabase:
                 "DELETE FROM nutrient_presets WHERE id = ?", (preset_id,)
             )
             return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Grow Cycles CRUD
+    # ------------------------------------------------------------------
+    async def async_create_grow_cycle(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create a named grow cycle (e.g. Winter 2026 Run)."""
+        return await self._run(self._create_grow_cycle_sync, data)
+
+    def _create_grow_cycle_sync(self, data: dict[str, Any]) -> dict[str, Any]:
+        cycle_id = data.get("id") or uuid.uuid4().hex[:12]
+        now = utc_now_iso()
+        status = data.get("status") or "active"
+        if status not in ("active", "completed", "archived"):
+            status = "active"
+        record = {
+            "id": cycle_id,
+            "name": (data.get("name") or "Grow Cycle").strip(),
+            "started_at": data.get("started_at") or now,
+            "ended_at": data.get("ended_at") or None,
+            "status": status,
+            "notes": data.get("notes") or None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        cols = ", ".join(record.keys())
+        placeholders = ", ".join(["?"] * len(record))
+        with self._connect() as conn:
+            conn.execute(
+                f"INSERT INTO grow_cycles ({cols}) VALUES ({placeholders})",
+                list(record.values()),
+            )
+            row = conn.execute(
+                "SELECT * FROM grow_cycles WHERE id = ?", (cycle_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_update_grow_cycle(
+        self, cycle_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Update a grow cycle."""
+        return await self._run(self._update_grow_cycle_sync, cycle_id, data)
+
+    def _update_grow_cycle_sync(
+        self, cycle_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        allowed = {"name", "started_at", "ended_at", "status", "notes"}
+        updates = {k: v for k, v in data.items() if k in allowed}
+        if "name" in updates and not updates["name"]:
+            updates.pop("name")
+        if "status" in updates and updates["status"] not in (
+            "active",
+            "completed",
+            "archived",
+        ):
+            updates.pop("status")
+        if not updates:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM grow_cycles WHERE id = ?", (cycle_id,)
+                ).fetchone()
+                return _row_to_dict(row)
+        updates["updated_at"] = utc_now_iso()
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE grow_cycles SET {set_clause} WHERE id = ?",
+                [*updates.values(), cycle_id],
+            )
+            row = conn.execute(
+                "SELECT * FROM grow_cycles WHERE id = ?", (cycle_id,)
+            ).fetchone()
+            return _row_to_dict(row)
+
+    async def async_delete_grow_cycle(self, cycle_id: str) -> bool:
+        """Delete a grow cycle (plants/harvests stay intact with grow_cycle_id=NULL)."""
+        return await self._run(self._delete_grow_cycle_sync, cycle_id)
+
+    def _delete_grow_cycle_sync(self, cycle_id: str) -> bool:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE plants SET grow_cycle_id = NULL WHERE grow_cycle_id = ?",
+                (cycle_id,),
+            )
+            cur = conn.execute("DELETE FROM grow_cycles WHERE id = ?", (cycle_id,))
+            return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Harvests & Curing Logs CRUD
+    # ------------------------------------------------------------------
+    async def async_upsert_harvest(
+        self, plant_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Create or update a plant's harvest & yield record."""
+        return await self._run(self._upsert_harvest_sync, plant_id, data)
+
+    def _upsert_harvest_sync(
+        self, plant_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            plant = conn.execute(
+                "SELECT * FROM plants WHERE id = ?", (plant_id,)
+            ).fetchone()
+            if not plant:
+                return None
+
+            existing = conn.execute(
+                "SELECT * FROM harvests WHERE plant_id = ?", (plant_id,)
+            ).fetchone()
+            now = utc_now_iso()
+
+            rating = data.get("rating")
+            if rating is not None and rating != "":
+                rating = max(1, min(5, int(rating)))
+            else:
+                rating = None
+
+            is_keeper = 1 if data.get("is_keeper") else 0
+            dry_days = (
+                int(data["dry_days"])
+                if data.get("dry_days") not in (None, "")
+                else None
+            )
+            grow_cycle_id = data.get("grow_cycle_id")
+            if grow_cycle_id is None:
+                grow_cycle_id = plant["grow_cycle_id"]
+
+            if existing is None:
+                harvest_id = data.get("id") or uuid.uuid4().hex[:12]
+                record = {
+                    "id": harvest_id,
+                    "plant_id": plant_id,
+                    "grow_cycle_id": grow_cycle_id or None,
+                    "harvested_at": data.get("harvested_at") or now,
+                    "wet_weight_g": data.get("wet_weight_g"),
+                    "dry_weight_g": data.get("dry_weight_g"),
+                    "trim_weight_g": data.get("trim_weight_g"),
+                    "dry_days": dry_days,
+                    "cure_start_at": data.get("cure_start_at") or None,
+                    "cure_rh_pct": data.get("cure_rh_pct"),
+                    "light_wattage_override": data.get("light_wattage_override"),
+                    "aroma_notes": data.get("aroma_notes") or None,
+                    "effect_notes": data.get("effect_notes") or None,
+                    "rating": rating,
+                    "is_keeper": is_keeper,
+                    "notes": data.get("notes") or None,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                cols = ", ".join(record.keys())
+                placeholders = ", ".join(["?"] * len(record))
+                conn.execute(
+                    f"INSERT INTO harvests ({cols}) VALUES ({placeholders})",
+                    list(record.values()),
+                )
+            else:
+                harvest_id = existing["id"]
+                updates: dict[str, Any] = {
+                    "grow_cycle_id": grow_cycle_id or None,
+                    "harvested_at": data.get("harvested_at") or existing["harvested_at"],
+                    "wet_weight_g": data.get("wet_weight_g"),
+                    "dry_weight_g": data.get("dry_weight_g"),
+                    "trim_weight_g": data.get("trim_weight_g"),
+                    "dry_days": dry_days,
+                    "cure_start_at": data.get("cure_start_at") or None,
+                    "cure_rh_pct": data.get("cure_rh_pct"),
+                    "light_wattage_override": data.get("light_wattage_override"),
+                    "aroma_notes": data.get("aroma_notes") or None,
+                    "effect_notes": data.get("effect_notes") or None,
+                    "rating": rating,
+                    "is_keeper": is_keeper,
+                    "notes": data.get("notes") or None,
+                    "updated_at": now,
+                }
+                set_clause = ", ".join(f"{k} = ?" for k in updates)
+                conn.execute(
+                    f"UPDATE harvests SET {set_clause} WHERE id = ?",
+                    [*updates.values(), harvest_id],
+                )
+
+            # Optional automatic stage transition when recording a harvest
+            set_stage = data.get("set_plant_stage")
+            if set_stage and set_stage in GROW_STAGES and plant["stage"] != set_stage:
+                self._set_stage_in_conn(
+                    conn,
+                    plant_id,
+                    set_stage,
+                    notes="Harvest recorded",
+                    changed_at=data.get("harvested_at") or now,
+                )
+
+            row = conn.execute(
+                "SELECT * FROM harvests WHERE id = ?", (harvest_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_delete_harvest(self, harvest_id: str) -> bool:
+        """Delete a harvest record and its curing logs."""
+        return await self._run(self._delete_harvest_sync, harvest_id)
+
+    def _delete_harvest_sync(self, harvest_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM harvests WHERE id = ?", (harvest_id,))
+            return cur.rowcount > 0
+
+    async def async_add_curing_log(
+        self, harvest_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Log a curing jar RH/burp check and sync latest cure_rh_pct onto harvest."""
+        return await self._run(self._add_curing_log_sync, harvest_id, data)
+
+    def _add_curing_log_sync(
+        self, harvest_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            harvest = conn.execute(
+                "SELECT id FROM harvests WHERE id = ?", (harvest_id,)
+            ).fetchone()
+            if not harvest:
+                return None
+
+            clog_id = uuid.uuid4().hex[:12]
+            now = utc_now_iso()
+            logged_at = data.get("logged_at") or now
+            jar_rh = data.get("jar_rh_pct")
+            jar_temp = data.get("jar_temp_c")
+            burped = 1 if data.get("burped", True) else 0
+            conn.execute(
+                """
+                INSERT INTO curing_logs (
+                    id, harvest_id, logged_at, jar_rh_pct, jar_temp_c, burped, notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    clog_id,
+                    harvest_id,
+                    logged_at,
+                    jar_rh,
+                    jar_temp,
+                    burped,
+                    data.get("notes") or None,
+                    now,
+                ),
+            )
+            if jar_rh is not None:
+                conn.execute(
+                    "UPDATE harvests SET cure_rh_pct = ?, updated_at = ? WHERE id = ?",
+                    (jar_rh, now, harvest_id),
+                )
+            row = conn.execute(
+                "SELECT * FROM curing_logs WHERE id = ?", (clog_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_delete_curing_log(self, curing_log_id: str) -> bool:
+        """Delete a curing jar log entry."""
+        return await self._run(self._delete_curing_log_sync, curing_log_id)
+
+    def _delete_curing_log_sync(self, curing_log_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM curing_logs WHERE id = ?", (curing_log_id,)
+            )
+            return cur.rowcount > 0
+
+    async def async_get_plant_report_data(
+        self, plant_id: str
+    ) -> dict[str, Any] | None:
+        """Collect complete plant history, logs, harvest, and curing logs for export."""
+        return await self._run(self._get_plant_report_data_sync, plant_id)
+
+    def _get_plant_report_data_sync(self, plant_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            plant = conn.execute(
+                "SELECT * FROM plants WHERE id = ?", (plant_id,)
+            ).fetchone()
+            if not plant:
+                return None
+            plant_dict = dict(plant)
+            env = None
+            if plant_dict.get("environment_id"):
+                env = _row_to_dict(
+                    conn.execute(
+                        "SELECT * FROM environments WHERE id = ?",
+                        (plant_dict["environment_id"],),
+                    ).fetchone()
+                )
+            cycle = None
+            if plant_dict.get("grow_cycle_id"):
+                cycle = _row_to_dict(
+                    conn.execute(
+                        "SELECT * FROM grow_cycles WHERE id = ?",
+                        (plant_dict["grow_cycle_id"],),
+                    ).fetchone()
+                )
+            stage_history = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM stage_history WHERE plant_id = ? ORDER BY started_at ASC",
+                    (plant_id,),
+                ).fetchall()
+            ]
+            logs = [
+                _deserialize_log(r)
+                for r in conn.execute(
+                    "SELECT * FROM logs WHERE plant_id = ? ORDER BY logged_at ASC",
+                    (plant_id,),
+                ).fetchall()
+            ]
+            harvest_row = conn.execute(
+                "SELECT * FROM harvests WHERE plant_id = ?", (plant_id,)
+            ).fetchone()
+            harvest = dict(harvest_row) if harvest_row else None
+            curing_logs = (
+                [
+                    dict(r)
+                    for r in conn.execute(
+                        "SELECT * FROM curing_logs WHERE harvest_id = ? ORDER BY logged_at ASC",
+                        (harvest["id"],),
+                    ).fetchall()
+                ]
+                if harvest
+                else []
+            )
+            return {
+                "plant": plant_dict,
+                "environment": env,
+                "grow_cycle": cycle,
+                "stage_history": stage_history,
+                "logs": logs,
+                "harvest": harvest,
+                "curing_logs": curing_logs,
+            }

@@ -12,7 +12,7 @@ import {
   scaleNutrientsForVolume,
   stageBadgeHtml,
   toLocalDatetimeInput,
-} from "./api.js?v=0.3.0";
+} from "./api.js?v=0.4.0";
 
 function entityOptionsHtml(entities = [], selected = "", placeholder = "None") {
   const opts = [`<option value="">${escapeHtml(placeholder)}</option>`];
@@ -77,6 +77,13 @@ export function renderPlantModal(plant, state, haEntities) {
                 <select class="select" name="environment_id">
                   <option value="">Unassigned</option>
                   ${(state.environments || []).map((e) => `<option value="${escapeHtml(e.id)}" ${plant?.environment_id === e.id ? "selected" : ""}>${escapeHtml(e.name)}</option>`).join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Grow Cycle (optional)</label>
+                <select class="select" name="grow_cycle_id">
+                  <option value="">None</option>
+                  ${(state.grow_cycles || []).map((c) => `<option value="${escapeHtml(c.id)}" ${plant?.grow_cycle_id === c.id ? "selected" : ""}>${escapeHtml(c.name)}</option>`).join("")}
                 </select>
               </div>
               <div class="form-field">
@@ -154,6 +161,10 @@ export function renderEnvironmentModal(env, state, haEntities) {
                 <input class="input" name="light_schedule" placeholder="18/6 or 12/12" value="${escapeHtml(env?.light_schedule || "18/6")}" />
               </div>
               <div class="form-field">
+                <label class="form-label">Light Wattage (W, for g/W)</label>
+                <input class="input" type="number" step="5" min="0" name="light_wattage" placeholder="e.g. 480" value="${env?.light_wattage ?? ""}" />
+              </div>
+              <div class="form-field full">
                 <label class="form-label">Leaf Temp Offset (°C for VPD)</label>
                 <input class="input" type="number" step="0.5" name="leaf_temp_offset_c" value="${env?.leaf_temp_offset_c ?? -2.0}" />
               </div>
@@ -767,6 +778,206 @@ export function renderConfirmModal({ title, message, confirmLabel = "Delete", da
           <button type="button" class="btn" data-close-modal="1">Cancel</button>
           <button type="button" class="btn ${danger ? "btn-danger" : "btn-primary"}" id="confirm-modal-ok">${escapeHtml(confirmLabel)}</button>
         </div>
+      </div>
+    </div>
+  `;
+}
+
+export function renderHarvestModal({ plant, harvest }, state) {
+  const isEdit = Boolean(harvest?.id);
+  const harvestedDate = (harvest?.harvested_at || new Date().toISOString()).slice(0, 10);
+  const cureDate = harvest?.cure_start_at ? harvest.cure_start_at.slice(0, 10) : "";
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">${isEdit ? "🌾 Edit Harvest & Yield" : "🌾 Record Harvest & Yield"}</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="harvest-form">
+          <div class="modal-body">
+            <div style="font-size:14px;font-weight:700;">🪴 ${escapeHtml(plant.name)}${plant.strain ? ` · ${escapeHtml(plant.strain)}` : ""}</div>
+            <div class="form-grid">
+              <div class="form-field">
+                <label class="form-label">Harvest Date</label>
+                <input class="input" type="date" name="harvested_at" value="${escapeHtml(harvestedDate)}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Grow Cycle</label>
+                <select class="select" name="grow_cycle_id">
+                  <option value="">None</option>
+                  ${(state.grow_cycles || []).map((c) => `<option value="${escapeHtml(c.id)}" ${(harvest?.grow_cycle_id || plant.grow_cycle_id) === c.id ? "selected" : ""}>${escapeHtml(c.name)}</option>`).join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Wet Weight (g)</label>
+                <input class="input" type="number" step="0.1" min="0" name="wet_weight_g" placeholder="e.g. 420" value="${harvest?.wet_weight_g ?? ""}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Dry Flower Weight (g)</label>
+                <input class="input" type="number" step="0.1" min="0" name="dry_weight_g" placeholder="e.g. 98.5" value="${harvest?.dry_weight_g ?? ""}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Trim / Larf Weight (g)</label>
+                <input class="input" type="number" step="0.1" min="0" name="trim_weight_g" placeholder="e.g. 24" value="${harvest?.trim_weight_g ?? ""}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Dry Duration (days)</label>
+                <input class="input" type="number" step="1" min="0" name="dry_days" placeholder="e.g. 10" value="${harvest?.dry_days ?? ""}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Cure Start Date</label>
+                <input class="input" type="date" name="cure_start_at" value="${escapeHtml(cureDate)}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Current Jar RH (%)</label>
+                <input class="input" type="number" step="0.5" min="0" max="100" name="cure_rh_pct" placeholder="e.g. 62" value="${harvest?.cure_rh_pct ?? ""}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Rating (1–5 ★)</label>
+                <select class="select" name="rating">
+                  <option value="">Unrated</option>
+                  ${[5, 4, 3, 2, 1].map((r) => `<option value="${r}" ${harvest?.rating === r ? "selected" : ""}>${"★".repeat(r)} (${r}/5)</option>`).join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Light Wattage Override (W)</label>
+                <input class="input" type="number" step="5" min="0" name="light_wattage_override" placeholder="Auto from tent" value="${harvest?.light_wattage_override ?? ""}" />
+              </div>
+              <div class="form-field full">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600;">
+                  <input type="checkbox" name="is_keeper" ${harvest?.is_keeper ? "checked" : ""} />
+                  <span>🏆 Mark as Keeper Phenotype</span>
+                </label>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Aroma / Terpene Notes</label>
+                <input class="input" name="aroma_notes" placeholder="e.g. Pine, citrus, gas" value="${escapeHtml(harvest?.aroma_notes || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Effect / Smoke Notes</label>
+                <input class="input" name="effect_notes" placeholder="e.g. Uplifting, smooth, relaxing" value="${escapeHtml(harvest?.effect_notes || "")}" />
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Update Plant Stage (optional)</label>
+                <select class="select" name="set_plant_stage">
+                  <option value="">Keep current stage (${escapeHtml(STAGE_META[plant.stage]?.label || plant.stage)})</option>
+                  <option value="drying">Drying</option>
+                  <option value="curing">Curing</option>
+                  <option value="harvested">Harvested</option>
+                  <option value="archived">Archived</option>
+                </select>
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Harvest & Pheno Notes</label>
+                <textarea class="textarea" name="notes" placeholder="Trichome ratio, bud density, trim ease, keeper notes...">${escapeHtml(harvest?.notes || "")}</textarea>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">${isEdit ? "Save Harvest" : "Record Harvest"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderCuringLogModal({ harvest, plantName }) {
+  const nowLocal = toLocalDatetimeInput();
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" style="max-width:460px;" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">🫙 Log Jar Check / Burp</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="curing-form">
+          <div class="modal-body">
+            <div style="font-size:13px;color:var(--igro-text-muted);">Plant: <strong>${escapeHtml(plantName || "Harvest")}</strong></div>
+            <div class="form-grid">
+              <div class="form-field full">
+                <label class="form-label">Date & Time</label>
+                <input class="input" type="datetime-local" name="logged_at" value="${escapeHtml(nowLocal)}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Jar Humidity (%)</label>
+                <input class="input" type="number" step="0.5" min="0" max="100" name="jar_rh_pct" placeholder="e.g. 62" value="${harvest?.cure_rh_pct ?? ""}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Jar Temp (°C, optional)</label>
+                <input class="input" type="number" step="0.5" name="jar_temp_c" placeholder="e.g. 19.5" />
+              </div>
+              <div class="form-field full">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600;">
+                  <input type="checkbox" name="burped" checked />
+                  <span>Jar burped / aired out</span>
+                </label>
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Notes</label>
+                <textarea class="textarea" name="notes" placeholder="Smell developing nicely, added 62% Boveda pack..."></textarea>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save Jar Check</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderGrowCycleModal(cycle) {
+  const isEdit = Boolean(cycle?.id);
+  const startDate = (cycle?.started_at || new Date().toISOString()).slice(0, 10);
+  const endDate = cycle?.ended_at ? cycle.ended_at.slice(0, 10) : "";
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" style="max-width:480px;" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">${isEdit ? "✏️ Edit Grow Cycle" : "🗓 New Grow Cycle"}</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="cycle-form">
+          <div class="modal-body">
+            <div class="form-grid">
+              <div class="form-field full">
+                <label class="form-label">Cycle Name *</label>
+                <input class="input" name="name" required placeholder="e.g. Winter 2026 Run" value="${escapeHtml(cycle?.name || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Start Date</label>
+                <input class="input" type="date" name="started_at" value="${escapeHtml(startDate)}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">End Date (optional)</label>
+                <input class="input" type="date" name="ended_at" value="${escapeHtml(endDate)}" />
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Status</label>
+                <select class="select" name="status">
+                  <option value="active" ${(cycle?.status || "active") === "active" ? "selected" : ""}>Active</option>
+                  <option value="completed" ${cycle?.status === "completed" ? "selected" : ""}>Completed</option>
+                  <option value="archived" ${cycle?.status === "archived" ? "selected" : ""}>Archived</option>
+                </select>
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Notes</label>
+                <textarea class="textarea" name="notes" placeholder="Run goals, nutrient line tested, lessons learned...">${escapeHtml(cycle?.notes || "")}</textarea>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">${isEdit ? "Save Cycle" : "Create Cycle"}</button>
+          </div>
+        </form>
       </div>
     </div>
   `;
