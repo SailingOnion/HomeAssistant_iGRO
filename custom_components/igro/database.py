@@ -9,7 +9,7 @@ to avoid recorder lock contention or schema conflicts.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 import json
 from pathlib import Path
 import secrets
@@ -29,7 +29,7 @@ SCHEMA_VERSION = 1
 
 def utc_now_iso() -> str:
     """Return current UTC timestamp in ISO-8601 format."""
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

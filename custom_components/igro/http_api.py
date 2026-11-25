@@ -11,8 +11,6 @@ from typing import Any
 import uuid
 
 from aiohttp import web
-
-from homeassistant.components import camera
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 
@@ -129,6 +127,8 @@ async def async_capture_camera_photo(
     caption: str | None = None,
 ) -> dict[str, Any]:
     """Capture a live snapshot from an HA camera entity and save it to iGro."""
+    from homeassistant.components import camera
+
     image = await camera.async_get_image(hass, camera_entity_id)
     content_type = image.content_type or "image/jpeg"
     ext = mimetypes.guess_extension(content_type) or ".jpg"

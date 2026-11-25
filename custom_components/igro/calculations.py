@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 import math
 from typing import Any
 
@@ -119,8 +119,8 @@ def parse_iso_datetime(value: str | None) -> datetime | None:
             cleaned = cleaned[:-1] + "+00:00"
         dt = datetime.fromisoformat(cleaned)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
     except ValueError:
         return None
 
@@ -130,7 +130,7 @@ def days_since(iso_timestamp: str | None, now: datetime | None = None) -> int | 
     dt = parse_iso_datetime(iso_timestamp)
     if dt is None:
         return None
-    ref = now or datetime.now(timezone.utc)
+    ref = now or datetime.now(UTC)
     delta = ref - dt
     return max(0, delta.days)
 
@@ -140,7 +140,7 @@ def compute_plant_day_metrics(
     now: datetime | None = None,
 ) -> dict[str, int | None]:
     """Compute total grow days, stage days, and 1-indexed stage week."""
-    ref = now or datetime.now(timezone.utc)
+    ref = now or datetime.now(UTC)
     total_days = days_since(plant.get("started_at"), ref)
     stage_days = days_since(plant.get("stage_started_at") or plant.get("started_at"), ref)
     stage_week = ((stage_days // 7) + 1) if stage_days is not None else None
