@@ -24,7 +24,7 @@ from .const import (
     STAGE_GERMINATION,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def utc_now_iso() -> str:
@@ -39,6 +39,19 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 
 def _deserialize_log(row: sqlite3.Row) -> dict[str, Any]:
+    data = dict(row)
+    raw = data.pop("nutrients_json", None)
+    if raw:
+        try:
+            data["nutrients"] = json.loads(raw)
+        except (ValueError, TypeError):
+            data["nutrients"] = []
+    else:
+        data["nutrients"] = []
+    return data
+
+
+def _deserialize_preset(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     raw = data.pop("nutrients_json", None)
     if raw:
@@ -190,6 +203,21 @@ class IGroDatabase:
                     FOREIGN KEY (log_id) REFERENCES logs(id) ON DELETE SET NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS nutrient_presets (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    stage TEXT,
+                    week_start INTEGER,
+                    week_end INTEGER,
+                    target_ph REAL,
+                    target_ec REAL,
+                    target_ppm REAL,
+                    nutrients_json TEXT NOT NULL DEFAULT '[]',
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_plants_env ON plants(environment_id);
                 CREATE INDEX IF NOT EXISTS idx_stage_history_plant ON stage_history(plant_id, started_at);
                 CREATE INDEX IF NOT EXISTS idx_logs_plant_logged ON logs(plant_id, logged_at DESC);
@@ -197,6 +225,7 @@ class IGroDatabase:
                 CREATE INDEX IF NOT EXISTS idx_logs_logged ON logs(logged_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_photos_plant_taken ON photos(plant_id, taken_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_photos_taken ON photos(taken_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_presets_stage ON nutrient_presets(stage, week_start);
                 """
             )
             conn.execute(
@@ -241,6 +270,15 @@ class IGroDatabase:
                 dict(r)
                 for r in conn.execute(
                     "SELECT * FROM photos ORDER BY taken_at DESC, created_at DESC LIMIT 60"
+                ).fetchall()
+            ]
+            nutrient_presets = [
+                _deserialize_preset(r)
+                for r in conn.execute(
+                    """
+                    SELECT * FROM nutrient_presets
+                    ORDER BY stage IS NULL ASC, stage ASC, week_start IS NULL ASC, week_start ASC, name ASC
+                    """
                 ).fetchall()
             ]
 
@@ -338,6 +376,7 @@ class IGroDatabase:
                 "plant_stats": plant_stats,
                 "recent_logs": recent_logs,
                 "recent_photos": recent_photos,
+                "nutrient_presets": nutrient_presets,
                 "totals": {
                     "logs": total_logs,
                     "photos": total_photos,
@@ -914,3 +953,147 @@ class IGroDatabase:
             )
             conn.execute("DELETE FROM photos WHERE id = ?", (photo_id,))
             return row["filename"]
+
+    # ------------------------------------------------------------------
+    # Nutrient Presets & Feeding Schedules CRUD
+    # ------------------------------------------------------------------
+    async def async_list_nutrient_presets(
+        self, stage: str | None = None
+    ) -> list[dict[str, Any]]:
+        """List saved nutrient presets, optionally filtered by grow stage."""
+        return await self._run(self._list_nutrient_presets_sync, stage)
+
+    def _list_nutrient_presets_sync(
+        self, stage: str | None
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if stage:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM nutrient_presets
+                    WHERE stage = ? OR stage IS NULL
+                    ORDER BY stage IS NULL ASC, week_start IS NULL ASC, week_start ASC, name ASC
+                    """,
+                    (stage,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM nutrient_presets
+                    ORDER BY stage IS NULL ASC, stage ASC, week_start IS NULL ASC, week_start ASC, name ASC
+                    """
+                ).fetchall()
+            return [_deserialize_preset(r) for r in rows]
+
+    async def async_get_nutrient_preset(
+        self, preset_id: str
+    ) -> dict[str, Any] | None:
+        """Fetch a single nutrient preset by ID."""
+        return await self._run(self._get_nutrient_preset_sync, preset_id)
+
+    def _get_nutrient_preset_sync(self, preset_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM nutrient_presets WHERE id = ?", (preset_id,)
+            ).fetchone()
+            return _deserialize_preset(row) if row else None
+
+    async def async_create_nutrient_preset(
+        self, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Create a reusable nutrient preset recipe."""
+        return await self._run(self._create_nutrient_preset_sync, data)
+
+    def _create_nutrient_preset_sync(self, data: dict[str, Any]) -> dict[str, Any]:
+        preset_id = data.get("id") or uuid.uuid4().hex[:12]
+        now = utc_now_iso()
+        stage = data.get("stage") or None
+        if stage and stage not in GROW_STAGES:
+            stage = None
+        nutrients = data.get("nutrients") or []
+        record = {
+            "id": preset_id,
+            "name": (data.get("name") or "Nutrient Preset").strip(),
+            "stage": stage,
+            "week_start": (
+                int(data["week_start"]) if data.get("week_start") is not None else None
+            ),
+            "week_end": (
+                int(data["week_end"]) if data.get("week_end") is not None else None
+            ),
+            "target_ph": data.get("target_ph"),
+            "target_ec": data.get("target_ec"),
+            "target_ppm": data.get("target_ppm"),
+            "nutrients_json": json.dumps(nutrients),
+            "notes": data.get("notes") or None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        cols = ", ".join(record.keys())
+        placeholders = ", ".join(["?"] * len(record))
+        with self._connect() as conn:
+            conn.execute(
+                f"INSERT INTO nutrient_presets ({cols}) VALUES ({placeholders})",
+                list(record.values()),
+            )
+            created = conn.execute(
+                "SELECT * FROM nutrient_presets WHERE id = ?", (preset_id,)
+            ).fetchone()
+            return _deserialize_preset(created)
+
+    async def async_update_nutrient_preset(
+        self, preset_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Update an existing nutrient preset recipe."""
+        return await self._run(self._update_nutrient_preset_sync, preset_id, data)
+
+    def _update_nutrient_preset_sync(
+        self, preset_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        allowed = {
+            "name",
+            "stage",
+            "week_start",
+            "week_end",
+            "target_ph",
+            "target_ec",
+            "target_ppm",
+            "notes",
+        }
+        updates: dict[str, Any] = {k: v for k, v in data.items() if k in allowed}
+        if "name" in updates and not updates["name"]:
+            updates.pop("name")
+        if "stage" in updates and updates["stage"] and updates["stage"] not in GROW_STAGES:
+            updates["stage"] = None
+        if "week_start" in updates and updates["week_start"] is not None:
+            updates["week_start"] = int(updates["week_start"])
+        if "week_end" in updates and updates["week_end"] is not None:
+            updates["week_end"] = int(updates["week_end"])
+        if "nutrients" in data:
+            updates["nutrients_json"] = json.dumps(data.get("nutrients") or [])
+
+        if not updates:
+            return self._get_nutrient_preset_sync(preset_id)
+
+        updates["updated_at"] = utc_now_iso()
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE nutrient_presets SET {set_clause} WHERE id = ?",
+                [*updates.values(), preset_id],
+            )
+            row = conn.execute(
+                "SELECT * FROM nutrient_presets WHERE id = ?", (preset_id,)
+            ).fetchone()
+            return _deserialize_preset(row) if row else None
+
+    async def async_delete_nutrient_preset(self, preset_id: str) -> bool:
+        """Delete a nutrient preset."""
+        return await self._run(self._delete_nutrient_preset_sync, preset_id)
+
+    def _delete_nutrient_preset_sync(self, preset_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM nutrient_presets WHERE id = ?", (preset_id,)
+            )
+            return cur.rowcount > 0

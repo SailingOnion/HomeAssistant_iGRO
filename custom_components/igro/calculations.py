@@ -151,3 +151,91 @@ def compute_plant_day_metrics(
         "stage_days": stage_days,
         "stage_week": stage_week,
     }
+
+
+ML_PER_US_GALLON = 3785.411784
+
+
+def scale_nutrients_for_volume(
+    nutrients: list[dict[str, Any]],
+    water_volume_ml: float | None,
+) -> list[dict[str, Any]]:
+    """Scale per-liter or per-gallon nutrient dosages to a target water volume.
+
+    Returns a copy of each nutrient dict enriched with `total_amount` and `total_unit`
+    when scaling applies (e.g. `mL/L`, `g/L`, `mL/gal`, `g/gal`, `tsp/gal`).
+    """
+    results: list[dict[str, Any]] = []
+    liters = (water_volume_ml / 1000.0) if (water_volume_ml and water_volume_ml > 0) else None
+    gallons = (
+        (water_volume_ml / ML_PER_US_GALLON)
+        if (water_volume_ml and water_volume_ml > 0)
+        else None
+    )
+
+    for item in nutrients:
+        entry = dict(item)
+        raw_amount = item.get("amount")
+        unit = (item.get("unit") or "").strip()
+        unit_lower = unit.lower()
+
+        try:
+            qty = float(raw_amount) if raw_amount not in (None, "") else None
+        except (ValueError, TypeError):
+            qty = None
+
+        if qty is not None and liters is not None and gallons is not None:
+            if unit_lower.endswith("/l") or unit_lower.endswith("/liter"):
+                base_unit = unit.split("/", 1)[0].strip() or "mL"
+                entry["total_amount"] = round(qty * liters, 2)
+                entry["total_unit"] = base_unit
+            elif unit_lower.endswith("/gal") or unit_lower.endswith("/gallon"):
+                base_unit = unit.split("/", 1)[0].strip() or "mL"
+                entry["total_amount"] = round(qty * gallons, 2)
+                entry["total_unit"] = base_unit
+            else:
+                entry["total_amount"] = round(qty, 2)
+                entry["total_unit"] = unit
+
+        results.append(entry)
+    return results
+
+
+def suggest_presets_for_plant(
+    plant: dict[str, Any],
+    presets: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return matching nutrient presets ranked by specificity for a plant's stage & week."""
+    plant_stage = plant.get("stage")
+    stage_week = plant.get("stage_week")
+    scored: list[tuple[int, str, dict[str, Any]]] = []
+
+    for preset in presets:
+        p_stage = preset.get("stage")
+        w_start = preset.get("week_start")
+        w_end = preset.get("week_end")
+
+        if p_stage and p_stage != plant_stage:
+            continue
+
+        week_matched = False
+        if w_start is not None or w_end is not None:
+            if stage_week is None:
+                continue
+            low = w_start if w_start is not None else 1
+            high = w_end if w_end is not None else 999
+            if not (low <= stage_week <= high):
+                continue
+            week_matched = True
+
+        # Lower score = higher priority: exact stage+week (0) > stage-only (1) > any-stage (2)
+        if p_stage and week_matched:
+            rank = 0
+        elif p_stage:
+            rank = 1
+        else:
+            rank = 2
+        scored.append((rank, (preset.get("name") or "").lower(), preset))
+
+    scored.sort(key=lambda t: (t[0], t[1]))
+    return [item[2] for item in scored]

@@ -4,12 +4,14 @@
 
 import {
   LOG_TYPE_META,
+  NUTRIENT_UNITS,
   STAGE_META,
   TRAINING_METHODS,
   escapeHtml,
   formatDateTime,
+  scaleNutrientsForVolume,
   stageBadgeHtml,
-} from "./api.js?v=0.1.1";
+} from "./api.js?v=0.2.0";
 
 function entityOptionsHtml(entities = [], selected = "", placeholder = "None") {
   const opts = [`<option value="">${escapeHtml(placeholder)}</option>`];
@@ -242,15 +244,59 @@ export function renderEnvironmentModal(env, state, haEntities) {
   `;
 }
 
+export function renderScaledMixHtml(nutrients, waterVolumeMl) {
+  const vol = parseFloat(waterVolumeMl);
+  if (!Number.isFinite(vol) || vol <= 0) {
+    return `<span style="color:var(--igro-text-muted);">Enter a Water Volume (mL) above to auto-calculate exact total mix dosages.</span>`;
+  }
+  const scaled = scaleNutrientsForVolume(
+    (nutrients || []).filter((n) => n?.name && n?.amount !== "" && n?.amount !== null && n?.amount !== undefined),
+    vol
+  );
+  if (!scaled.length) {
+    return `<span style="color:var(--igro-text-muted);">Add nutrients with amounts above to preview scaled totals for ${(vol / 1000).toFixed(2)} L.</span>`;
+  }
+  const liters = (vol / 1000).toFixed(2);
+  const gal = (vol / 3785.411784).toFixed(2);
+  return `
+    <div style="font-weight:600;margin-bottom:6px;">🧮 Total Mix for ${vol} mL (${liters} L / ${gal} gal):</div>
+    <div class="log-chips" style="margin-top:0;">
+      ${scaled
+        .map(
+          (n) =>
+            `<span class="log-chip" style="border-color:var(--igro-accent);color:var(--igro-text);"><strong>${escapeHtml(n.name)}</strong>: ${n.total_amount ?? n.amount} ${escapeHtml(n.total_unit || n.unit || "")}</span>`
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function nutrientUnitSelectHtml(selected = "mL/L") {
+  const units = NUTRIENT_UNITS.includes(selected) ? NUTRIENT_UNITS : [selected, ...NUTRIENT_UNITS];
+  return `<select class="select" name="nut_unit">${units
+    .map((u) => `<option value="${escapeHtml(u)}" ${u === selected ? "selected" : ""}>${escapeHtml(u)}</option>`)
+    .join("")}</select>`;
+}
+
 export function renderLogModal(defaults, state) {
   const selectedType = defaults.log_type || "water";
   const selectedPlantId = defaults.plant_id || (state.plants?.[0]?.id ?? "");
+  const selectedPlant = (state.plants || []).find((p) => p.id === selectedPlantId);
   const selectableTypes = ["water", "feed", "training", "defoliation", "measurement", "transplant", "flush", "pest_issue", "note"];
   const showWaterFields = ["water", "feed", "flush"].includes(selectedType);
   const showFeedFields = selectedType === "feed";
   const showTrainingFields = selectedType === "training";
   const showMeasureFields = selectedType === "measurement";
-  const nutrients = defaults.nutrients || (showFeedFields ? [{ name: "", amount: "", unit: "mL/L" }] : []);
+  const nutrients = defaults.nutrients?.length
+    ? defaults.nutrients
+    : showFeedFields
+    ? [{ name: "", amount: "", unit: "mL/L" }]
+    : [];
+
+  const allPresets = state.nutrient_presets || [];
+  const suggestedIds = new Set(selectedPlant?.suggested_preset_ids || []);
+  const suggestedPresets = allPresets.filter((pr) => suggestedIds.has(pr.id));
+  const otherPresets = allPresets.filter((pr) => !suggestedIds.has(pr.id));
 
   return `
     <div class="modal-backdrop" data-close-modal="1">
@@ -288,31 +334,58 @@ export function renderLogModal(defaults, state) {
               </div>
 
               ${
+                showFeedFields && allPresets.length
+                  ? `
+                <div class="form-field full">
+                  <label class="form-label">🧪 Apply Nutrient Preset</label>
+                  <select class="select" id="log-preset-select">
+                    <option value="">— Choose a saved recipe to auto-fill —</option>
+                    ${
+                      suggestedPresets.length
+                        ? `<optgroup label="⭐ Recommended for ${escapeHtml(selectedPlant?.name || "Plant")} (${escapeHtml(STAGE_META[selectedPlant?.stage]?.label || "")} Wk ${selectedPlant?.stage_week ?? 1})">
+                            ${suggestedPresets.map((pr) => `<option value="${escapeHtml(pr.id)}" ${defaults.preset_id === pr.id ? "selected" : ""}>⭐ ${escapeHtml(pr.name)}</option>`).join("")}
+                          </optgroup>`
+                        : ""
+                    }
+                    ${
+                      otherPresets.length
+                        ? `<optgroup label="${suggestedPresets.length ? "Other Presets" : "Saved Presets"}">
+                            ${otherPresets.map((pr) => `<option value="${escapeHtml(pr.id)}" ${defaults.preset_id === pr.id ? "selected" : ""}>${escapeHtml(pr.name)}</option>`).join("")}
+                          </optgroup>`
+                        : ""
+                    }
+                  </select>
+                </div>
+              `
+                  : ""
+              }
+
+              ${
                 showWaterFields
                   ? `
                 <div class="form-field">
                   <label class="form-label">Water Volume (mL)</label>
-                  <input class="input" type="number" step="50" name="water_volume_ml" placeholder="e.g. 2000" />
+                  <input class="input" type="number" step="50" name="water_volume_ml" placeholder="e.g. 2000" value="${defaults.water_volume_ml ?? ""}" />
                 </div>
                 <div class="form-field">
                   <label class="form-label">Input pH</label>
-                  <input class="input" type="number" step="0.1" min="0" max="14" name="ph" placeholder="e.g. 6.3" />
+                  <input class="input" type="number" step="0.1" min="0" max="14" name="ph" placeholder="e.g. 6.3" value="${defaults.ph ?? ""}" />
                 </div>
                 <div class="form-field">
                   <label class="form-label">Input EC (mS/cm)</label>
-                  <input class="input" type="number" step="0.1" name="ec" placeholder="e.g. 1.4" />
+                  <input class="input" type="number" step="0.1" name="ec" placeholder="e.g. 1.4" value="${defaults.ec ?? ""}" />
                 </div>
                 <div class="form-field">
                   <label class="form-label">Input PPM</label>
-                  <input class="input" type="number" step="10" name="ppm" placeholder="e.g. 700" />
+                  <input class="input" type="number" step="10" name="ppm" placeholder="e.g. 700" value="${defaults.ppm ?? ""}" />
                 </div>
                 <div class="form-field">
                   <label class="form-label">Runoff pH</label>
-                  <input class="input" type="number" step="0.1" min="0" max="14" name="runoff_ph" placeholder="optional" />
+                  <input class="input" type="number" step="0.1" min="0" max="14" name="runoff_ph" placeholder="optional" value="${defaults.runoff_ph ?? ""}" />
                 </div>
                 <div class="form-field">
                   <label class="form-label">Runoff EC</label>
-                  <input class="input" type="number" step="0.1" name="runoff_ec" placeholder="optional" />
+                  <input class="input" type="number" step="0.1" name="runoff_ec" placeholder="optional" value="${defaults.runoff_ec ?? ""}" />
                 </div>
               `
                   : ""
@@ -332,13 +405,16 @@ export function renderLogModal(defaults, state) {
                         (n, idx) => `
                       <div class="nutrient-row" data-nutrient-row="${idx}">
                         <input class="input" name="nut_name" placeholder="Nutrient (e.g. Cal-Mag)" value="${escapeHtml(n.name || "")}" />
-                        <input class="input" name="nut_amount" placeholder="Qty (e.g. 2)" value="${escapeHtml(n.amount || "")}" />
-                        <input class="input" name="nut_unit" placeholder="mL/L" value="${escapeHtml(n.unit || "mL/L")}" />
+                        <input class="input" type="number" step="0.1" name="nut_amount" placeholder="Qty (e.g. 2)" value="${escapeHtml(n.amount ?? "")}" />
+                        ${nutrientUnitSelectHtml(n.unit || "mL/L")}
                         <button type="button" class="btn btn-sm btn-danger" data-remove-nutrient="${idx}">✕</button>
                       </div>
                     `
                       )
                       .join("")}
+                  </div>
+                  <div id="scaled-mix-preview" style="margin-top:10px;padding:10px 12px;border-radius:10px;background:var(--igro-surface-2);border:1px solid var(--igro-border);font-size:12px;">
+                    ${renderScaledMixHtml(nutrients, defaults.water_volume_ml)}
                   </div>
                 </div>
               `
@@ -371,13 +447,99 @@ export function renderLogModal(defaults, state) {
 
               <div class="form-field full">
                 <label class="form-label">Notes</label>
-                <textarea class="textarea" name="notes" placeholder="Leaf color, vigor, runoff observations, adjustments..."></textarea>
+                <textarea class="textarea" name="notes" placeholder="Leaf color, vigor, runoff observations, adjustments...">${escapeHtml(defaults.notes || "")}</textarea>
               </div>
             </div>
           </div>
           <div class="modal-footer">
             <button type="button" class="btn" data-close-modal="1">Cancel</button>
             <button type="submit" class="btn btn-primary">Save Entry</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderPresetModal(preset, state) {
+  const isEdit = Boolean(preset?.id);
+  const stages = state.meta?.stages || Object.keys(STAGE_META);
+  const nutrients = preset?.nutrients?.length
+    ? preset.nutrients
+    : [{ name: "", amount: "", unit: "mL/L" }];
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">${isEdit ? "✏️ Edit Nutrient Preset" : "🧪 New Nutrient Preset"}</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="preset-form">
+          <div class="modal-body">
+            <div class="form-grid">
+              <div class="form-field full">
+                <label class="form-label">Preset Name *</label>
+                <input class="input" name="name" required placeholder="e.g. Veg Week 2–4 Base" value="${escapeHtml(preset?.name || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Target Stage (optional)</label>
+                <select class="select" name="stage">
+                  <option value="">Any Stage</option>
+                  ${stages.map((s) => `<option value="${s}" ${preset?.stage === s ? "selected" : ""}>${STAGE_META[s]?.label || s}</option>`).join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Stage Week Range (optional)</label>
+                <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:6px;align-items:center;">
+                  <input class="input" type="number" min="1" max="52" name="week_start" placeholder="From wk" value="${preset?.week_start ?? ""}" />
+                  <span style="color:var(--igro-text-muted);">–</span>
+                  <input class="input" type="number" min="1" max="52" name="week_end" placeholder="To wk" value="${preset?.week_end ?? ""}" />
+                </div>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Target pH</label>
+                <input class="input" type="number" step="0.1" min="0" max="14" name="target_ph" placeholder="e.g. 6.0" value="${preset?.target_ph ?? ""}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Target EC (mS/cm)</label>
+                <input class="input" type="number" step="0.1" name="target_ec" placeholder="e.g. 1.4" value="${preset?.target_ec ?? ""}" />
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Target PPM (optional)</label>
+                <input class="input" type="number" step="10" name="target_ppm" placeholder="e.g. 700" value="${preset?.target_ppm ?? ""}" />
+              </div>
+
+              <div class="form-field full">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                  <label class="form-label">Nutrients & Dosages</label>
+                  <button type="button" class="btn btn-sm" data-add-nutrient="1">+ Add Nutrient</button>
+                </div>
+                <div id="nutrients-list" style="display:flex;flex-direction:column;gap:8px;">
+                  ${nutrients
+                    .map(
+                      (n, idx) => `
+                    <div class="nutrient-row" data-nutrient-row="${idx}">
+                      <input class="input" name="nut_name" placeholder="Nutrient (e.g. Grow A)" value="${escapeHtml(n.name || "")}" />
+                      <input class="input" type="number" step="0.1" name="nut_amount" placeholder="Qty" value="${escapeHtml(n.amount ?? "")}" />
+                      ${nutrientUnitSelectHtml(n.unit || "mL/L")}
+                      <button type="button" class="btn btn-sm btn-danger" data-remove-nutrient="${idx}">✕</button>
+                    </div>
+                  `
+                    )
+                    .join("")}
+                </div>
+              </div>
+
+              <div class="form-field full">
+                <label class="form-label">Mixing Order / Notes</label>
+                <textarea class="textarea" name="notes" placeholder="e.g. Mix Silica first, wait 10 min, then Cal-Mag, A, B, pH last...">${escapeHtml(preset?.notes || "")}</textarea>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">${isEdit ? "Save Preset" : "Create Preset"}</button>
           </div>
         </form>
       </div>

@@ -26,6 +26,37 @@ export const LOG_TYPE_META = {
   note:         { label: "Note",         icon: "📝", color: "#64748b" },
 };
 
+export const NUTRIENT_UNITS = ["mL/L", "mL/gal", "g/L", "g/gal", "tsp/gal", "mL", "g"];
+
+export const ML_PER_US_GALLON = 3785.411784;
+
+export function scaleNutrientsForVolume(nutrients = [], waterVolumeMl = null) {
+  const vol = parseFloat(waterVolumeMl);
+  const hasVol = Number.isFinite(vol) && vol > 0;
+  const liters = hasVol ? vol / 1000 : null;
+  const gallons = hasVol ? vol / ML_PER_US_GALLON : null;
+
+  return nutrients.map((item) => {
+    const entry = { ...item };
+    const qty = parseFloat(item.amount);
+    const unit = (item.unit || "").trim();
+    const lower = unit.toLowerCase();
+    if (Number.isFinite(qty) && hasVol) {
+      if (lower.endsWith("/l") || lower.endsWith("/liter")) {
+        entry.total_amount = Math.round(qty * liters * 100) / 100;
+        entry.total_unit = unit.split("/")[0].trim() || "mL";
+      } else if (lower.endsWith("/gal") || lower.endsWith("/gallon")) {
+        entry.total_amount = Math.round(qty * gallons * 100) / 100;
+        entry.total_unit = unit.split("/")[0].trim() || "mL";
+      } else {
+        entry.total_amount = Math.round(qty * 100) / 100;
+        entry.total_unit = unit;
+      }
+    }
+    return entry;
+  });
+}
+
 export const TRAINING_METHODS = [
   "LST (Low Stress Training)",
   "Topping",
@@ -193,6 +224,22 @@ export class IGroApi {
 
   async setCoverPhoto(plant_id, photo_id) {
     return this.hass.callWS({ type: "igro/photos/set_cover", plant_id, photo_id });
+  }
+
+  async listPresets(stage = null) {
+    return this.hass.callWS({ type: "igro/presets/list", stage });
+  }
+
+  async createPreset(data) {
+    return this.hass.callWS({ type: "igro/presets/create", data });
+  }
+
+  async updatePreset(preset_id, data) {
+    return this.hass.callWS({ type: "igro/presets/update", preset_id, data });
+  }
+
+  async deletePreset(preset_id) {
+    return this.hass.callWS({ type: "igro/presets/delete", preset_id });
   }
 
   async uploadPhoto(formData) {
