@@ -26,6 +26,18 @@ export const LOG_TYPE_META = {
   note:         { label: "Note",         icon: "📝", color: "#64748b" },
 };
 
+export const REMINDER_ACTION_META = {
+  water:        { label: "Water",        icon: "💧", color: "#0ea5e9" },
+  feed:         { label: "Feed",         icon: "🧪", color: "#10b981" },
+  training:     { label: "Training",     icon: "✂️", color: "#f59e0b" },
+  defoliation:  { label: "Defoliation",  icon: "🍃", color: "#84cc16" },
+  measurement:  { label: "Measurement",  icon: "📏", color: "#8b5cf6" },
+  flush:        { label: "Flush",        icon: "🚿", color: "#06b6d4" },
+  burp_jars:    { label: "Burp Jars",    icon: "🫙", color: "#0284c7" },
+  stage_change: { label: "Stage Change", icon: "🔄", color: "#a855f7" },
+  note:         { label: "Task / Note",  icon: "⏰", color: "#64748b" },
+};
+
 export const NUTRIENT_UNITS = ["mL/L", "mL/gal", "g/L", "g/gal", "tsp/gal", "mL", "g"];
 
 export const ML_PER_US_GALLON = 3785.411784;
@@ -360,6 +372,28 @@ export class IGroApi {
 
   async exportPlantReport(plant_id) {
     return this.hass.callWS({ type: "igro/reports/export", plant_id });
+  }
+
+  async listReminders(filters = {}) {
+    return this.hass.callWS({ type: "igro/reminders/list", ...filters });
+  }
+
+  async createReminder(data) {
+    return this.hass.callWS({ type: "igro/reminders/create", data });
+  }
+
+  async updateReminder(reminder_id, data) {
+    return this.hass.callWS({ type: "igro/reminders/update", reminder_id, data });
+  }
+
+  async completeReminder(reminder_id, create_log = null) {
+    const payload = { type: "igro/reminders/complete", reminder_id };
+    if (create_log !== null) payload.create_log = create_log;
+    return this.hass.callWS(payload);
+  }
+
+  async deleteReminder(reminder_id) {
+    return this.hass.callWS({ type: "igro/reminders/delete", reminder_id });
   }
 
   async uploadPhoto(formData) {

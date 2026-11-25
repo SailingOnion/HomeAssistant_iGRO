@@ -7,6 +7,7 @@ import {
   IGroApi,
   LOG_TYPE_META,
   NUTRIENT_UNITS,
+  REMINDER_ACTION_META,
   STAGE_META,
   downloadTextFile,
   escapeHtml,
@@ -18,7 +19,7 @@ import {
   scaleNutrientsForVolume,
   stageBadgeHtml,
   vpdBadgeHtml,
-} from "./api.js?v=0.4.0";
+} from "./api.js?v=0.5.0";
 import {
   renderConfirmModal,
   renderCuringLogModal,
@@ -30,11 +31,12 @@ import {
   renderPhotoModal,
   renderPlantModal,
   renderPresetModal,
+  renderReminderModal,
   renderScaledMixHtml,
   renderStageHistoryModal,
   renderStageModal,
-} from "./modals.js?v=0.4.0";
-import { PANEL_STYLES } from "./styles.js?v=0.4.0";
+} from "./modals.js?v=0.5.0";
+import { PANEL_STYLES } from "./styles.js?v=0.5.0";
 
 class IGroPanel extends HTMLElement {
   constructor() {
@@ -74,6 +76,7 @@ class IGroPanel extends HTMLElement {
       nutrient_presets: [],
       grow_cycles: [],
       harvests: [],
+      reminders: [],
       summary: {},
       meta: { temperature_unit: "°C" },
     };
@@ -283,6 +286,8 @@ class IGroPanel extends HTMLElement {
         modalHtml = renderCuringLogModal(this._modal.data);
       } else if (this._modal.type === "cycle") {
         modalHtml = renderGrowCycleModal(this._modal.data);
+      } else if (this._modal.type === "reminder") {
+        modalHtml = renderReminderModal(this._modal.data, this._state);
       } else if (this._modal.type === "confirm") {
         modalHtml = renderConfirmModal(this._modal.data);
       }
@@ -329,6 +334,11 @@ class IGroPanel extends HTMLElement {
       (p) => !["harvested", "archived"].includes(p.stage)
     );
     const recentLogs = (this._state.recent_logs || []).slice(0, 8);
+    const activeReminders = (this._state.reminders || []).filter((r) => r.status === "active");
+    const prioritizedReminders = [...activeReminders]
+      .sort((a, b) => Number(Boolean(b.is_due)) - Number(Boolean(a.is_due)))
+      .slice(0, 5);
+    const dueCount = s.due_reminders ?? activeReminders.filter((r) => r.is_due).length;
 
     return `
       <div class="kpi-grid">
@@ -355,12 +365,27 @@ class IGroPanel extends HTMLElement {
         </div>
         <div class="kpi-card">
           <div>
-            <div class="kpi-label">Journal & Photos</div>
-            <div class="kpi-value">${s.total_logs ?? 0} <span style="font-size:15px;color:var(--igro-text-muted);font-weight:500;">/ ${s.total_photos ?? 0} 📷</span></div>
+            <div class="kpi-label">Due Tasks</div>
+            <div class="kpi-value" style="color:${dueCount > 0 ? "var(--igro-warn)" : "var(--igro-accent)"}">${dueCount} <span style="font-size:14px;color:var(--igro-text-muted);font-weight:500;">/ ${activeReminders.length} active</span></div>
           </div>
-          <span class="kpi-emoji">📓</span>
+          <span class="kpi-emoji">⏰</span>
         </div>
       </div>
+
+      <div class="section-header">
+        <h2 class="section-title">⏰ Due Today & Upcoming Tasks${dueCount > 0 ? ` <span class="badge badge-warn" style="margin-left:6px;">${dueCount} due</span>` : ""}</h2>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-sm" id="btn-add-reminder-overview">+ Reminder</button>
+          <button class="btn btn-sm" data-open-reminders-tab="1">All Reminders (${activeReminders.length}) →</button>
+        </div>
+      </div>
+      ${
+        prioritizedReminders.length
+          ? `<div class="timeline">${prioritizedReminders.map((r) => this._renderReminderItem(r, true)).join("")}</div>`
+          : `<div class="empty-state" style="padding:20px;">
+              <p style="margin:0;">No upcoming tasks scheduled. Click <strong>+ Reminder</strong> to set watering, feeding, or curing schedules synced to HA Calendar & To-Do.</p>
+            </div>`
+      }
 
       <div class="section-header">
         <h2 class="section-title">⛺ Live Environments</h2>
@@ -768,6 +793,7 @@ class IGroPanel extends HTMLElement {
                 ? `<button class="btn btn-sm" id="btn-plant-snap-cam">🎥 Snap Camera</button>`
                 : ""
             }
+            <button class="btn btn-sm" data-plant-reminder="${escapeHtml(plant.id)}">⏰ + Reminder</button>
             <button class="btn btn-sm" data-record-harvest="${escapeHtml(plant.id)}">🌾 ${plant.harvest ? "Edit Harvest" : "Record Harvest"}</button>
           </div>
           ${plant.notes ? `<p class="log-notes" style="margin-top:12px;">${escapeHtml(plant.notes)}</p>` : ""}
@@ -977,56 +1003,121 @@ class IGroPanel extends HTMLElement {
     `;
   }
 
+  _renderReminderItem(rem, compact = false) {
+    const meta = REMINDER_ACTION_META[rem.action_type] || REMINDER_ACTION_META.note;
+    const isCompleted = rem.status === "completed";
+    const isPaused = rem.status === "paused";
+    const borderStyle = rem.is_overdue
+      ? "border-color:var(--igro-danger);"
+      : rem.is_moisture_triggered || rem.is_due_today
+      ? "border-color:var(--igro-warn);"
+      : isCompleted
+      ? "opacity:0.72;"
+      : "";
+
+    const chips = [];
+    if (rem.recurrence_days) chips.push(`🔁 Every ${rem.recurrence_days}d`);
+    if (rem.moisture_threshold !== null && rem.moisture_threshold !== undefined) {
+      chips.push(`💧 Moisture < ${rem.moisture_threshold}%`);
+    }
+    if (rem.preset_name) chips.push(`🧪 ${rem.preset_name}`);
+    if (rem.auto_log_on_complete) chips.push("📓 Auto-logs");
+    if (rem.environment_name && !rem.plant_name) chips.push(`⛺ ${rem.environment_name}`);
+
+    return `
+      <div class="log-item" style="${borderStyle}">
+        <div class="log-icon" style="background:${meta.color}22;color:${meta.color};">${meta.icon}</div>
+        <div class="log-body">
+          <div class="log-header">
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              <span class="log-title">${escapeHtml(rem.title)}</span>
+              ${rem.is_overdue ? `<span class="badge badge-danger">Overdue</span>` : ""}
+              ${!rem.is_overdue && rem.is_due_today ? `<span class="badge badge-warn">Due Today</span>` : ""}
+              ${rem.is_moisture_triggered ? `<span class="badge badge-danger">💧 Dry Soil</span>` : ""}
+              ${isPaused ? `<span class="badge badge-muted">Paused</span>` : ""}
+              ${isCompleted ? `<span class="badge badge-ok">Completed</span>` : ""}
+              ${rem.plant_name ? `<span class="badge badge-muted">🪴 ${escapeHtml(rem.plant_name)}</span>` : ""}
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              <span class="log-time" title="${escapeHtml(formatDateTime(rem.due_at))}">${formatRelative(rem.due_at)}</span>
+              ${!isCompleted ? `<button class="btn btn-sm btn-primary" data-complete-reminder="${escapeHtml(rem.id)}" title="Mark completed">✅ Done</button>` : ""}
+              ${!compact ? `<button class="btn btn-sm btn-icon" data-edit-reminder="${escapeHtml(rem.id)}" title="Edit reminder">✏️</button>` : ""}
+              ${!compact ? `<button class="btn btn-sm btn-icon btn-danger" data-delete-reminder="${escapeHtml(rem.id)}" title="Delete reminder">✕</button>` : ""}
+            </div>
+          </div>
+          ${chips.length ? `<div class="log-chips">${chips.map((c) => `<span class="log-chip">${escapeHtml(c)}</span>`).join("")}</div>` : ""}
+          ${rem.notes ? `<p class="log-notes">${escapeHtml(rem.notes)}</p>` : ""}
+        </div>
+      </div>
+    `;
+  }
+
   _renderJournal(unit) {
     const f = this._filters;
     const presets = this._state.nutrient_presets || [];
+    const reminders = this._state.reminders || [];
+    const activeRemCount = reminders.filter((r) => r.status === "active").length;
 
     const headerAction =
       this._journalSubTab === "presets"
         ? `<button class="btn btn-primary" id="btn-add-preset">+ New Preset</button>`
+        : this._journalSubTab === "reminders"
+        ? `<button class="btn btn-primary" id="btn-add-reminder">+ New Reminder</button>`
         : `<button class="btn btn-primary" id="btn-add-log-2">+ New Entry</button>`;
 
-    const bodyHtml =
-      this._journalSubTab === "presets"
-        ? presets.length
-          ? `<div class="grid-cards">${presets.map((pr) => this._renderPresetCard(pr)).join("")}</div>`
-          : `<div class="empty-state">
-              <div class="empty-state-emoji">🧪</div>
-              <h3>No nutrient presets saved yet</h3>
-              <p>Save reusable nutrient recipes (e.g. Veg Week 2–4 Base) with target pH/EC and auto-scale dosages for any bucket volume.</p>
-              <button class="btn btn-primary" id="btn-empty-preset">+ Create First Preset</button>
-            </div>`
-        : `
-          <div class="filter-bar">
-            <select class="select" id="filter-log-plant">
-              <option value="">All Plants</option>
-              ${(this._state.plants || []).map((p) => `<option value="${escapeHtml(p.id)}" ${f.logPlant === p.id ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}
-            </select>
-            <select class="select" id="filter-log-type">
-              <option value="">All Action Types</option>
-              ${Object.entries(LOG_TYPE_META).map(([k, v]) => `<option value="${k}" ${f.logType === k ? "selected" : ""}>${v.icon} ${v.label}</option>`).join("")}
-            </select>
-            <select class="select" id="filter-log-status">
-              <option value="">All Statuses</option>
-              <option value="completed" ${f.logStatus === "completed" ? "selected" : ""}>✅ Completed</option>
-              <option value="planned" ${f.logStatus === "planned" ? "selected" : ""}>📅 Planned</option>
-            </select>
-          </div>
-          ${
-            this._journalLogs.length
-              ? `<div class="timeline">${this._journalLogs.map((l) => this._renderLogItem(l, unit, true)).join("")}</div>`
-              : `<div class="empty-state">
-                  <div class="empty-state-emoji">📓</div>
-                  <h3>No journal entries found</h3>
-                  <p>Log waterings, nutrient mixes with pH & EC, LST/topping sessions, or measurements.</p>
-                </div>`
-          }
-        `;
+    let bodyHtml = "";
+    if (this._journalSubTab === "presets") {
+      bodyHtml = presets.length
+        ? `<div class="grid-cards">${presets.map((pr) => this._renderPresetCard(pr)).join("")}</div>`
+        : `<div class="empty-state">
+            <div class="empty-state-emoji">🧪</div>
+            <h3>No nutrient presets saved yet</h3>
+            <p>Save reusable nutrient recipes (e.g. Veg Week 2–4 Base) with target pH/EC and auto-scale dosages for any bucket volume.</p>
+            <button class="btn btn-primary" id="btn-empty-preset">+ Create First Preset</button>
+          </div>`;
+    } else if (this._journalSubTab === "reminders") {
+      bodyHtml = reminders.length
+        ? `<div class="timeline">${reminders.map((r) => this._renderReminderItem(r, false)).join("")}</div>`
+        : `<div class="empty-state">
+            <div class="empty-state-emoji">⏰</div>
+            <h3>No grow reminders yet</h3>
+            <p>Create recurring watering, feeding, or curing jar burp schedules. Active reminders sync automatically with Home Assistant Calendar &amp; To-Do lists.</p>
+            <button class="btn btn-primary" id="btn-empty-reminder">+ Create First Reminder</button>
+          </div>`;
+    } else {
+      bodyHtml = `
+        <div class="filter-bar">
+          <select class="select" id="filter-log-plant">
+            <option value="">All Plants</option>
+            ${(this._state.plants || []).map((p) => `<option value="${escapeHtml(p.id)}" ${f.logPlant === p.id ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}
+          </select>
+          <select class="select" id="filter-log-type">
+            <option value="">All Action Types</option>
+            ${Object.entries(LOG_TYPE_META).map(([k, v]) => `<option value="${k}" ${f.logType === k ? "selected" : ""}>${v.icon} ${v.label}</option>`).join("")}
+          </select>
+          <select class="select" id="filter-log-status">
+            <option value="">All Statuses</option>
+            <option value="completed" ${f.logStatus === "completed" ? "selected" : ""}>✅ Completed</option>
+            <option value="planned" ${f.logStatus === "planned" ? "selected" : ""}>📅 Planned</option>
+          </select>
+        </div>
+        ${
+          this._journalLogs.length
+            ? `<div class="timeline">${this._journalLogs.map((l) => this._renderLogItem(l, unit, true)).join("")}</div>`
+            : `<div class="empty-state">
+                <div class="empty-state-emoji">📓</div>
+                <h3>No journal entries found</h3>
+                <p>Log waterings, nutrient mixes with pH & EC, LST/topping sessions, or measurements.</p>
+              </div>`
+        }
+      `;
+    }
 
     return `
       <div class="section-header" style="margin-top:0;">
         <div class="nav-tabs">
           <button class="nav-tab ${this._journalSubTab === "logs" ? "active" : ""}" data-journal-subtab="logs">📓 Activity Log</button>
+          <button class="nav-tab ${this._journalSubTab === "reminders" ? "active" : ""}" data-journal-subtab="reminders">⏰ Reminders (${activeRemCount})</button>
           <button class="nav-tab ${this._journalSubTab === "presets" ? "active" : ""}" data-journal-subtab="presets">🧪 Nutrient Presets (${presets.length})</button>
         </div>
         ${headerAction}
@@ -1832,6 +1923,77 @@ class IGroPanel extends HTMLElement {
       });
     });
 
+    // Reminders actions
+    const openNewReminder = (defaults = {}) => {
+      this._modal = { type: "reminder", data: defaults };
+      this._render();
+    };
+    root.getElementById("btn-add-reminder")?.addEventListener("click", () => openNewReminder());
+    root.getElementById("btn-add-reminder-overview")?.addEventListener("click", () => openNewReminder());
+    root.getElementById("btn-empty-reminder")?.addEventListener("click", () => openNewReminder());
+
+    root.querySelectorAll("[data-open-reminders-tab]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        this._journalSubTab = "reminders";
+        await this._switchTab("journal");
+      });
+    });
+
+    root.querySelectorAll("[data-plant-reminder]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const plant = (this._state.plants || []).find((p) => p.id === el.dataset.plantReminder);
+        openNewReminder({
+          plant_id: plant?.id || null,
+          environment_id: plant?.environment_id || null,
+          title: plant ? `Water ${plant.name}` : "",
+          action_type: "water",
+        });
+      });
+    });
+
+    root.querySelectorAll("[data-complete-reminder]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const remId = el.dataset.completeReminder;
+        try {
+          const res = await this._api.completeReminder(remId);
+          await this._refreshState();
+          const msg = res?.created_log
+            ? "Task completed & logged to journal!"
+            : "Reminder completed!";
+          this._showToast(msg);
+        } catch (err) {
+          this._showToast(`Error: ${err.message || err}`, true);
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-edit-reminder]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const rem = (this._state.reminders || []).find((r) => r.id === el.dataset.editReminder);
+        if (rem) {
+          this._modal = { type: "reminder", data: rem };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-delete-reminder]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const rem = (this._state.reminders || []).find((r) => r.id === el.dataset.deleteReminder);
+        if (!rem) return;
+        this._openConfirm({
+          title: "🗑 Delete Reminder",
+          message: `Delete reminder "${rem.title}" permanently?`,
+          confirmLabel: "Delete Reminder",
+          onConfirm: async () => {
+            await this._api.deleteReminder(rem.id);
+            await this._refreshState();
+            this._showToast(`Deleted "${rem.title}"`);
+          },
+        });
+      });
+    });
+
     // Modal backdrop / close
     root.querySelectorAll("[data-close-modal]").forEach((el) => {
       el.addEventListener("click", (e) => {
@@ -2331,6 +2493,42 @@ class IGroPanel extends HTMLElement {
         } else {
           await this._api.createGrowCycle(data);
           this._showToast("Grow cycle created!");
+        }
+        this._modal = null;
+        await this._refreshState();
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Reminder form submit
+    root.getElementById("reminder-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const dueIso = fromLocalDatetimeInput(fd.get("due_at"));
+      const recRaw = fd.get("recurrence_days");
+      const moistRaw = fd.get("moisture_threshold");
+      const data = {
+        title: (fd.get("title") || "").trim(),
+        action_type: fd.get("action_type") || "water",
+        due_at: dueIso,
+        plant_id: fd.get("plant_id") || null,
+        environment_id: fd.get("environment_id") || null,
+        preset_id: fd.get("preset_id") || null,
+        recurrence_days: recRaw !== null && recRaw !== "" ? parseInt(recRaw, 10) : null,
+        moisture_threshold: moistRaw !== null && moistRaw !== "" ? parseFloat(moistRaw) : null,
+        auto_log_on_complete: fd.get("auto_log_on_complete") !== null,
+        notes: fd.get("notes") || null,
+      };
+      const statusVal = fd.get("status");
+      if (statusVal) data.status = statusVal;
+      try {
+        if (this._modal.data?.id) {
+          await this._api.updateReminder(this._modal.data.id, data);
+          this._showToast("Reminder updated!");
+        } else {
+          await this._api.createReminder(data);
+          this._showToast("Reminder scheduled!");
         }
         this._modal = null;
         await this._refreshState();

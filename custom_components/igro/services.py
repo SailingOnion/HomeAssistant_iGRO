@@ -23,7 +23,9 @@ from .const import (
     LOG_TYPES,
     SERVICE_ADVANCE_STAGE,
     SERVICE_CAPTURE_PHOTO,
+    SERVICE_COMPLETE_REMINDER,
     SERVICE_CREATE_PLANT,
+    SERVICE_CREATE_REMINDER,
     SERVICE_LOG_ACTION,
     SERVICE_RECORD_HARVEST,
     SERVICE_SET_STAGE,
@@ -228,6 +230,27 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
         await coordinator.async_request_refresh()
 
+    async def handle_create_reminder(call: ServiceCall) -> None:
+        coordinator = _get_coordinator(hass)
+        data = dict(call.data)
+        plant_ref = data.pop("plant", None)
+        if plant_ref:
+            data["plant_id"] = _resolve_plant_id(coordinator, plant_ref)
+        await coordinator.db.async_create_reminder(data)
+        await coordinator.async_request_refresh()
+
+    async def handle_complete_reminder(call: ServiceCall) -> None:
+        coordinator = _get_coordinator(hass)
+        result = await coordinator.db.async_complete_reminder(
+            call.data["reminder_id"],
+            create_log=call.data.get("create_log"),
+        )
+        if result is None:
+            raise HomeAssistantError(
+                f"Reminder '{call.data['reminder_id']}' not found"
+            )
+        await coordinator.async_request_refresh()
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_LOG_ACTION,
@@ -342,6 +365,38 @@ async def async_register_services(hass: HomeAssistant) -> None:
     )
 
 
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CREATE_REMINDER,
+        handle_create_reminder,
+        schema=vol.Schema(
+            {
+                vol.Required("title"): cv.string,
+                vol.Optional("plant"): cv.string,
+                vol.Optional("environment_id"): cv.string,
+                vol.Optional("action_type", default="water"): cv.string,
+                vol.Optional("due_at"): cv.string,
+                vol.Optional("recurrence_days"): vol.Coerce(int),
+                vol.Optional("moisture_threshold"): vol.Coerce(float),
+                vol.Optional("auto_log_on_complete", default=True): cv.boolean,
+                vol.Optional("notes"): cv.string,
+            }
+        ),
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_COMPLETE_REMINDER,
+        handle_complete_reminder,
+        schema=vol.Schema(
+            {
+                vol.Required("reminder_id"): cv.string,
+                vol.Optional("create_log"): cv.boolean,
+            }
+        ),
+    )
+
+
 async def async_unregister_services(hass: HomeAssistant) -> None:
     """Unregister iGro services on unload."""
     for svc in (
@@ -351,6 +406,8 @@ async def async_unregister_services(hass: HomeAssistant) -> None:
         SERVICE_CAPTURE_PHOTO,
         SERVICE_CREATE_PLANT,
         SERVICE_RECORD_HARVEST,
+        SERVICE_CREATE_REMINDER,
+        SERVICE_COMPLETE_REMINDER,
     ):
         if hass.services.has_service(DOMAIN, svc):
             hass.services.async_remove(DOMAIN, svc)
