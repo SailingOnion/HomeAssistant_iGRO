@@ -13,10 +13,11 @@ import {
   formatDateTime,
   formatRelative,
   formatTemp,
+  fromLocalDatetimeInput,
   scaleNutrientsForVolume,
   stageBadgeHtml,
   vpdBadgeHtml,
-} from "./api.js?v=0.2.1";
+} from "./api.js?v=0.3.0";
 import {
   renderConfirmModal,
   renderEnvironmentModal,
@@ -26,9 +27,10 @@ import {
   renderPlantModal,
   renderPresetModal,
   renderScaledMixHtml,
+  renderStageHistoryModal,
   renderStageModal,
-} from "./modals.js?v=0.2.1";
-import { PANEL_STYLES } from "./styles.js?v=0.2.1";
+} from "./modals.js?v=0.3.0";
+import { PANEL_STYLES } from "./styles.js?v=0.3.0";
 
 class IGroPanel extends HTMLElement {
   constructor() {
@@ -49,6 +51,7 @@ class IGroPanel extends HTMLElement {
       plantEnv: "",
       logPlant: "",
       logType: "",
+      logStatus: "",
       photoPlant: "",
       photoStage: "",
     };
@@ -57,6 +60,8 @@ class IGroPanel extends HTMLElement {
       environments: [],
       plants: [],
       recent_logs: [],
+      planned_logs: [],
+      scheduled_stage_changes: [],
       recent_photos: [],
       nutrient_presets: [],
       summary: {},
@@ -181,6 +186,7 @@ class IGroPanel extends HTMLElement {
     const res = await this._api.listLogs({
       plant_id: this._filters.logPlant || null,
       log_type: this._filters.logType || null,
+      status: this._filters.logStatus || null,
       limit: 150,
     });
     this._journalLogs = res.logs || [];
@@ -257,6 +263,8 @@ class IGroPanel extends HTMLElement {
         modalHtml = renderLightboxModal(this._modal.data);
       } else if (this._modal.type === "stage") {
         modalHtml = renderStageModal(this._modal.data);
+      } else if (this._modal.type === "stage_history") {
+        modalHtml = renderStageHistoryModal(this._modal.data, this._state);
       } else if (this._modal.type === "confirm") {
         modalHtml = renderConfirmModal(this._modal.data);
       }
@@ -478,25 +486,68 @@ class IGroPanel extends HTMLElement {
         : `<div class="empty-state"><p>No photos yet. Upload one or capture directly from your tent camera!</p></div>`;
     } else if (this._plantSubTab === "history") {
       const hist = plant.stage_history || [];
-      subHtml = hist.length
-        ? `<div class="timeline">${hist
+      subHtml = `
+        <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+          <button class="btn btn-sm btn-primary" id="btn-add-stage-history">+ Add Past Stage</button>
+        </div>
+        ${
+          hist.length
+            ? `<div class="timeline">${hist
+                .map(
+                  (h) => `
+              <div class="log-item">
+                <div class="log-icon" style="background:var(--igro-accent-soft);">${STAGE_META[h.stage]?.icon || "🌱"}</div>
+                <div class="log-body">
+                  <div class="log-header">
+                    <span class="log-title">${STAGE_META[h.stage]?.label || h.stage}</span>
+                    <div style="display:flex;align-items:center;gap:6px;">
+                      <span class="log-time">${formatDate(h.started_at)} → ${h.ended_at ? formatDate(h.ended_at) : "Current"}</span>
+                      <button class="btn btn-sm btn-icon" data-edit-stage-history="${escapeHtml(h.id)}" title="Edit stage date/notes">✏️</button>
+                      ${hist.length > 1 ? `<button class="btn btn-sm btn-icon btn-danger" data-delete-stage-history="${escapeHtml(h.id)}" title="Delete stage entry">✕</button>` : ""}
+                    </div>
+                  </div>
+                  ${h.notes ? `<p class="log-notes">${escapeHtml(h.notes)}</p>` : ""}
+                </div>
+              </div>
+            `
+                )
+                .join("")}</div>`
+            : `<div class="empty-state"><p>No stage history recorded.</p></div>`
+        }
+      `;
+    }
+
+    const schedStages = plant.scheduled_stage_changes || [];
+    const schedBannerHtml = schedStages.length
+      ? `
+        <div style="margin-bottom:16px;display:flex;flex-direction:column;gap:8px;">
+          ${schedStages
             .map(
-              (h) => `
-            <div class="log-item">
-              <div class="log-icon" style="background:var(--igro-accent-soft);">${STAGE_META[h.stage]?.icon || "🌱"}</div>
+              (sc) => `
+            <div class="log-item" style="border-style:dashed;border-color:var(--igro-info);">
+              <div class="log-icon" style="background:rgba(14,165,233,0.16);color:var(--igro-info);">📅</div>
               <div class="log-body">
                 <div class="log-header">
-                  <span class="log-title">${STAGE_META[h.stage]?.label || h.stage}</span>
-                  <span class="log-time">${formatDate(h.started_at)} → ${h.ended_at ? formatDate(h.ended_at) : "Current"}</span>
+                  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <span class="log-title">Scheduled Stage Transition</span>
+                    ${stageBadgeHtml(sc.target_stage)}
+                    <span class="badge badge-info">${formatDate(sc.scheduled_for)} (${formatRelative(sc.scheduled_for)})</span>
+                    ${sc.auto_apply ? `<span class="badge badge-ok">Auto-apply</span>` : `<span class="badge badge-muted">Manual</span>`}
+                  </div>
+                  <div style="display:flex;gap:6px;">
+                    <button class="btn btn-sm btn-primary" data-apply-sched-stage="${escapeHtml(sc.id)}">▶ Apply Now</button>
+                    <button class="btn btn-sm btn-danger" data-cancel-sched-stage="${escapeHtml(sc.id)}">✕</button>
+                  </div>
                 </div>
-                ${h.notes ? `<p class="log-notes">${escapeHtml(h.notes)}</p>` : ""}
+                ${sc.notes ? `<p class="log-notes">${escapeHtml(sc.notes)}</p>` : ""}
               </div>
             </div>
           `
             )
-            .join("")}</div>`
-        : `<div class="empty-state"><p>No stage history recorded.</p></div>`;
-    }
+            .join("")}
+        </div>
+      `
+      : "";
 
     return `
       <div style="margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
@@ -597,6 +648,7 @@ class IGroPanel extends HTMLElement {
         </div>
       </div>
 
+      ${schedBannerHtml}
       <div class="nav-tabs" style="margin-bottom:14px;">
         <button class="nav-tab ${this._plantSubTab === "journal" ? "active" : ""}" data-plant-subtab="journal">📓 Journal (${this._plantLogs.length})</button>
         <button class="nav-tab ${this._plantSubTab === "photos" ? "active" : ""}" data-plant-subtab="photos">📷 Photos (${this._plantPhotos.length})</button>
@@ -713,17 +765,21 @@ class IGroPanel extends HTMLElement {
       chips.push(`🌡 ${formatTemp(log.temp_c, unit)} · ${log.humidity ?? "—"}% · ${log.vpd_kpa} kPa`);
     }
 
+    const isPlanned = log.status === "planned";
     return `
-      <div class="log-item">
+      <div class="log-item" style="${isPlanned ? "border-style:dashed;border-color:var(--igro-info);" : ""}">
         <div class="log-icon" style="background:${meta.color}22;color:${meta.color};">${meta.icon}</div>
         <div class="log-body">
           <div class="log-header">
-            <div>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
               <span class="log-title">${escapeHtml(log.title || meta.label)}</span>
-              ${log.plant_name ? `<span class="badge badge-muted" style="margin-left:8px;">🪴 ${escapeHtml(log.plant_name)}</span>` : ""}
+              ${isPlanned ? `<span class="badge badge-info">📅 Planned</span>` : ""}
+              ${log.plant_name ? `<span class="badge badge-muted">🪴 ${escapeHtml(log.plant_name)}</span>` : ""}
             </div>
-            <div style="display:flex;align-items:center;gap:8px;">
+            <div style="display:flex;align-items:center;gap:6px;">
               <span class="log-time" title="${escapeHtml(formatDateTime(log.logged_at))}">${formatRelative(log.logged_at)}</span>
+              ${isPlanned ? `<button class="btn btn-sm btn-primary" data-complete-log="${escapeHtml(log.id)}" title="Mark completed">✅ Done</button>` : ""}
+              ${showDelete ? `<button class="btn btn-sm btn-icon" data-edit-log="${escapeHtml(log.id)}" title="Edit entry">✏️</button>` : ""}
               ${showDelete ? `<button class="btn btn-sm btn-icon btn-danger" data-delete-log="${escapeHtml(log.id)}" title="Delete log">✕</button>` : ""}
             </div>
           </div>
@@ -822,6 +878,11 @@ class IGroPanel extends HTMLElement {
             <select class="select" id="filter-log-type">
               <option value="">All Action Types</option>
               ${Object.entries(LOG_TYPE_META).map(([k, v]) => `<option value="${k}" ${f.logType === k ? "selected" : ""}>${v.icon} ${v.label}</option>`).join("")}
+            </select>
+            <select class="select" id="filter-log-status">
+              <option value="">All Statuses</option>
+              <option value="completed" ${f.logStatus === "completed" ? "selected" : ""}>✅ Completed</option>
+              <option value="planned" ${f.logStatus === "planned" ? "selected" : ""}>📅 Planned</option>
             </select>
           </div>
           ${
@@ -1133,7 +1194,35 @@ class IGroPanel extends HTMLElement {
       });
     });
 
-    // Delete log
+    // Edit / Complete / Delete log
+    const findLogById = (logId) =>
+      [...this._journalLogs, ...this._plantLogs, ...(this._state.recent_logs || []), ...(this._state.planned_logs || [])].find(
+        (l) => l.id === logId
+      );
+
+    root.querySelectorAll("[data-edit-log]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const lg = findLogById(el.dataset.editLog);
+        if (lg) {
+          this._modal = { type: "log", data: { ...lg } };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-complete-log]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const logId = el.dataset.completeLog;
+        try {
+          await this._api.completeLog(logId);
+          await this._refreshState();
+          this._showToast("Marked entry as completed!");
+        } catch (err) {
+          this._showToast(`Error: ${err.message || err}`, true);
+        }
+      });
+    });
+
     root.querySelectorAll("[data-delete-log]").forEach((el) => {
       el.addEventListener("click", () => {
         const logId = el.dataset.deleteLog;
@@ -1145,6 +1234,70 @@ class IGroPanel extends HTMLElement {
             await this._api.deleteLog(logId);
             await this._refreshState();
             this._showToast("Entry deleted");
+          },
+        });
+      });
+    });
+
+    // Retrospective Stage History & Scheduled Stage Transitions
+    root.getElementById("btn-add-stage-history")?.addEventListener("click", () => {
+      const plant = (this._state.plants || []).find((p) => p.id === this._selectedPlantId);
+      if (plant) {
+        this._modal = { type: "stage_history", data: { plant, history: null } };
+        this._render();
+      }
+    });
+
+    root.querySelectorAll("[data-edit-stage-history]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const plant = (this._state.plants || []).find((p) => p.id === this._selectedPlantId);
+        const hist = (plant?.stage_history || []).find((h) => h.id === el.dataset.editStageHistory);
+        if (plant && hist) {
+          this._modal = { type: "stage_history", data: { plant, history: hist } };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-delete-stage-history]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const histId = el.dataset.deleteStageHistory;
+        this._openConfirm({
+          title: "🗑 Delete Stage History Entry",
+          message: "Remove this stage entry? Remaining stages will automatically re-chain chronologically.",
+          confirmLabel: "Delete Stage Entry",
+          onConfirm: async () => {
+            await this._api.deleteStageHistory(histId);
+            await this._refreshState();
+            this._showToast("Stage history updated");
+          },
+        });
+      });
+    });
+
+    root.querySelectorAll("[data-apply-sched-stage]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        try {
+          await this._api.applyScheduledStageChange(el.dataset.applySchedStage);
+          await this._refreshState();
+          this._showToast("Scheduled stage transition applied!");
+        } catch (err) {
+          this._showToast(`Error: ${err.message || err}`, true);
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-cancel-sched-stage]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const schedId = el.dataset.cancelSchedStage;
+        this._openConfirm({
+          title: "Cancel Scheduled Stage Change",
+          message: "Cancel this upcoming scheduled stage transition?",
+          confirmLabel: "Cancel Transition",
+          onConfirm: async () => {
+            await this._api.cancelScheduledStageChange(schedId);
+            await this._refreshState();
+            this._showToast("Scheduled transition cancelled");
           },
         });
       });
@@ -1199,6 +1352,11 @@ class IGroPanel extends HTMLElement {
     });
     root.getElementById("filter-log-type")?.addEventListener("change", async (e) => {
       this._filters.logType = e.target.value;
+      await this._loadJournal();
+      this._render();
+    });
+    root.getElementById("filter-log-status")?.addEventListener("change", async (e) => {
+      this._filters.logStatus = e.target.value;
       await this._loadJournal();
       this._render();
     });
@@ -1373,16 +1531,26 @@ class IGroPanel extends HTMLElement {
       });
     });
 
-    // Live auto-scaling mix preview inside #log-form
+    // Live auto-scaling mix preview & future-date status sync inside #log-form
     const logFormEl = root.getElementById("log-form");
     if (logFormEl) {
       logFormEl.addEventListener("input", updateScaledMixPreview);
       logFormEl.addEventListener("change", (e) => {
-        if (e.target.name === "plant_id") {
+        if (e.target.id === "log-datetime-input") {
+          const picked = new Date(e.target.value);
+          const statusSel = root.getElementById("log-status-select");
+          if (statusSel && !Number.isNaN(picked.getTime())) {
+            statusSel.value = picked.getTime() - Date.now() > 300000 ? "planned" : "completed";
+          }
+        } else if (e.target.name === "plant_id") {
           const volVal = logFormEl.querySelector("[name='water_volume_ml']")?.value || "";
+          const dtVal = logFormEl.querySelector("[name='logged_at']")?.value || "";
+          const stVal = logFormEl.querySelector("[name='status']")?.value || "completed";
           this._modal.data = {
             ...this._modal.data,
             plant_id: e.target.value,
+            logged_at_local: dtVal,
+            status: stVal,
             water_volume_ml: volVal !== "" ? parseFloat(volVal) : null,
             nutrients: collectNutrientRows(logFormEl),
           };
@@ -1397,27 +1565,41 @@ class IGroPanel extends HTMLElement {
       e.preventDefault();
       const form = e.target;
       const fd = new FormData(form);
+      const loggedAtIso = fromLocalDatetimeInput(fd.get("logged_at"));
       const data = {
         log_type: fd.get("log_type"),
         plant_id: fd.get("plant_id") || null,
         title: fd.get("title") || null,
         notes: fd.get("notes") || null,
         training_method: fd.get("training_method") || null,
+        status: fd.get("status") || "completed",
       };
+      if (loggedAtIso) data.logged_at = loggedAtIso;
       for (const nf of ["water_volume_ml", "ph", "ec", "ppm", "runoff_ph", "runoff_ec", "height_cm"]) {
         const val = fd.get(nf);
-        if (val !== null && val !== "") data[nf] = parseFloat(val);
+        if (val !== null && val !== "") {
+          data[nf] = parseFloat(val);
+        } else if (this._modal.data?.id) {
+          data[nf] = null;
+        }
       }
       const rawNutrients = collectNutrientRows(form);
       if (rawNutrients.length) {
         data.nutrients = scaleNutrientsForVolume(rawNutrients, data.water_volume_ml);
+      } else if (this._modal.data?.id) {
+        data.nutrients = [];
       }
 
       try {
-        await this._api.createLog(data);
+        if (this._modal.data?.id) {
+          await this._api.updateLog(this._modal.data.id, data);
+          this._showToast("Journal entry updated!");
+        } else {
+          await this._api.createLog(data);
+          this._showToast(data.status === "planned" ? "Planned entry scheduled!" : "Journal entry saved!");
+        }
         this._modal = null;
         await this._refreshState();
-        this._showToast("Journal entry saved!");
       } catch (err) {
         this._showToast(`Error: ${err.message || err}`, true);
       }
@@ -1475,6 +1657,15 @@ class IGroPanel extends HTMLElement {
       e.preventDefault();
       const fd = new FormData(e.target);
       const mode = fd.get("mode");
+      if (mode === "upload") {
+        const rawTaken = fd.get("taken_at");
+        if (rawTaken) {
+          const iso = fromLocalDatetimeInput(rawTaken);
+          if (iso) fd.set("taken_at", iso);
+        } else {
+          fd.delete("taken_at");
+        }
+      }
       try {
         if (mode === "upload") {
           await this._api.uploadPhoto(fd);
@@ -1518,20 +1709,69 @@ class IGroPanel extends HTMLElement {
       });
     });
 
-    // Stage transition modal submit
+    // Stage transition modal (past/now/future scheduling)
+    const stageDateInp = root.getElementById("stage-date-input");
+    if (stageDateInp) {
+      const updateStageModeUi = () => {
+        const todayDefault = root.querySelector("#stage-form [name='today_default']")?.value || "";
+        const isFuture = Boolean(stageDateInp.value && todayDefault && stageDateInp.value > todayDefault);
+        const schedBox = root.getElementById("stage-schedule-options");
+        const submitBtn = root.getElementById("stage-submit-btn");
+        if (schedBox) schedBox.style.display = isFuture ? "block" : "none";
+        if (submitBtn) {
+          const lbl = submitBtn.dataset.targetLabel || "Stage";
+          submitBtn.textContent = isFuture ? `📅 Schedule Move to ${lbl}` : `Move to ${lbl}`;
+        }
+      };
+      stageDateInp.addEventListener("change", updateStageModeUi);
+      updateStageModeUi();
+    }
+
     root.getElementById("stage-form")?.addEventListener("submit", async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
       const notes = (fd.get("notes") || "").trim() || null;
       const pickedDate = (fd.get("changed_at") || "").trim();
       const todayDefault = fd.get("today_default") || "";
-      const changedAt = pickedDate && pickedDate !== todayDefault ? pickedDate : null;
+      const isFuture = Boolean(pickedDate && todayDefault && pickedDate > todayDefault);
       const { plant, targetStage } = this._modal.data;
       try {
-        await this._api.setPlantStage(plant.id, targetStage, notes, changedAt);
+        if (isFuture) {
+          const autoApply = fd.get("auto_apply") !== null;
+          await this._api.scheduleStageChange(plant.id, targetStage, pickedDate, autoApply, notes);
+          this._modal = null;
+          await this._refreshState();
+          this._showToast(`Scheduled ${plant.name} → ${STAGE_META[targetStage]?.label || targetStage} on ${formatDate(pickedDate)}`);
+        } else {
+          const changedAt = pickedDate && pickedDate !== todayDefault ? pickedDate : null;
+          await this._api.setPlantStage(plant.id, targetStage, notes, changedAt);
+          this._modal = null;
+          await this._refreshState();
+          this._showToast(`Moved ${plant.name} to ${STAGE_META[targetStage]?.label || targetStage}`);
+        }
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Stage History add/edit form submit
+    root.getElementById("stage-history-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const stage = fd.get("stage");
+      const startedAt = fd.get("started_at");
+      const notes = (fd.get("notes") || "").trim() || null;
+      const { plant, history } = this._modal.data;
+      try {
+        if (history?.id) {
+          await this._api.updateStageHistory(history.id, { stage, started_at: startedAt, notes });
+          this._showToast("Stage history updated!");
+        } else {
+          await this._api.addStageHistory(plant.id, stage, startedAt, notes);
+          this._showToast("Past stage added!");
+        }
         this._modal = null;
         await this._refreshState();
-        this._showToast(`Moved ${plant.name} to ${STAGE_META[targetStage]?.label || targetStage}`);
       } catch (err) {
         this._showToast(`Error: ${err.message || err}`, true);
       }

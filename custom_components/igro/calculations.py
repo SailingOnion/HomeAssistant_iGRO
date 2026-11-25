@@ -135,6 +135,34 @@ def days_since(iso_timestamp: str | None, now: datetime | None = None) -> int | 
     return max(0, delta.days)
 
 
+def is_timestamp_in_future(
+    iso_timestamp: str | None,
+    now: datetime | None = None,
+    grace_seconds: int = 300,
+) -> bool:
+    """Return True if an ISO timestamp is strictly in the future beyond grace_seconds."""
+    dt = parse_iso_datetime(iso_timestamp)
+    if dt is None:
+        return False
+    ref = now or datetime.now(UTC)
+    return (dt - ref).total_seconds() > grace_seconds
+
+
+def is_timestamp_near_now(
+    iso_timestamp: str | None,
+    now: datetime | None = None,
+    tolerance_minutes: int = 15,
+) -> bool:
+    """Return True if timestamp is omitted or within tolerance_minutes of now."""
+    if not iso_timestamp:
+        return True
+    dt = parse_iso_datetime(iso_timestamp)
+    if dt is None:
+        return True
+    ref = now or datetime.now(UTC)
+    return abs((dt - ref).total_seconds()) <= tolerance_minutes * 60
+
+
 def compute_plant_day_metrics(
     plant: dict[str, Any],
     now: datetime | None = None,

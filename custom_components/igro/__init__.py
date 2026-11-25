@@ -97,7 +97,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         frontend_url_path=PANEL_URL_PATH,
         sidebar_title=panel_title,
         sidebar_icon=panel_icon,
-        module_url=f"{STATIC_URL_PATH}/igro-panel.js?v=0.2.1",
+        module_url=f"{STATIC_URL_PATH}/igro-panel.js?v=0.3.0",
         config={"entry_id": entry.entry_id},
         require_admin=False,
     )

@@ -9,7 +9,11 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 import voluptuous as vol
 
-from .calculations import scale_nutrients_for_volume
+from .calculations import (
+    is_timestamp_in_future,
+    is_timestamp_near_now,
+    scale_nutrients_for_volume,
+)
 from .const import (
     DOMAIN,
     EVENT_LOG_CREATED,
@@ -91,12 +95,20 @@ async def async_register_services(hass: HomeAssistant) -> None:
             if ppm is None:
                 ppm = preset.get("target_ppm")
 
+        logged_at = data.get("logged_at")
+        status = data.get("status")
+        is_planned = status == "planned" or (
+            status is None and is_timestamp_in_future(logged_at)
+        )
+
         payload = {
             "plant_id": plant_id,
             "environment_id": data.get("environment_id"),
             "log_type": data["log_type"],
             "title": title,
             "notes": data.get("notes"),
+            "logged_at": logged_at,
+            "status": status,
             "water_volume_ml": water_volume_ml,
             "ph": ph,
             "ec": ec,
@@ -107,10 +119,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
             "training_method": data.get("training_method"),
             "nutrients": nutrients,
         }
-        env_readings = coordinator.get_environment_readings_for_plant(plant_id)
-        payload.update(
-            {k: v for k, v in env_readings.items() if v is not None}
-        )
+        if not is_planned and is_timestamp_near_now(logged_at):
+            env_readings = coordinator.get_environment_readings_for_plant(plant_id)
+            payload.update(
+                {k: v for k, v in env_readings.items() if v is not None}
+            )
 
         created = await coordinator.db.async_create_log(payload)
         hass.bus.async_fire(
@@ -119,6 +132,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 "log_id": created["id"],
                 "plant_id": plant_id,
                 "log_type": created["log_type"],
+                "status": created.get("status"),
             },
         )
         await coordinator.async_request_refresh()
@@ -127,8 +141,19 @@ async def async_register_services(hass: HomeAssistant) -> None:
         coordinator = _get_coordinator(hass)
         plant_id = _resolve_plant_id(coordinator, call.data["plant"])
         stage = call.data["stage"]
+        changed_at = call.data.get("changed_at")
+        if changed_at and is_timestamp_in_future(changed_at):
+            await coordinator.db.async_schedule_stage_change(
+                plant_id,
+                stage,
+                changed_at,
+                auto_apply=call.data.get("auto_apply", True),
+                notes=call.data.get("notes"),
+            )
+            await coordinator.async_request_refresh()
+            return
         await coordinator.db.async_set_plant_stage(
-            plant_id, stage, notes=call.data.get("notes")
+            plant_id, stage, notes=call.data.get("notes"), changed_at=changed_at
         )
         hass.bus.async_fire(
             EVENT_STAGE_CHANGED, {"plant_id": plant_id, "stage": stage}
@@ -204,6 +229,8 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 vol.Optional("training_method"): cv.string,
                 vol.Optional("nutrients"): list,
                 vol.Optional("preset"): cv.string,
+                vol.Optional("logged_at"): cv.string,
+                vol.Optional("status"): vol.In(["completed", "planned"]),
             }
         ),
     )
@@ -217,6 +244,8 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 vol.Required("plant"): cv.string,
                 vol.Required("stage"): vol.In(GROW_STAGES),
                 vol.Optional("notes"): cv.string,
+                vol.Optional("changed_at"): cv.string,
+                vol.Optional("auto_apply", default=True): cv.boolean,
             }
         ),
     )

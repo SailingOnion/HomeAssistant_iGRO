@@ -27,6 +27,7 @@ from .const import (
     ACTIVE_STAGES,
     DEFAULT_LEAF_TEMP_OFFSET_C,
     DOMAIN,
+    EVENT_STAGE_CHANGED,
     SIGNAL_ENTITIES_CHANGED,
     VPD_STATUS_HIGH,
     VPD_STATUS_LOW,
@@ -125,6 +126,18 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Load SQLite snapshot and merge live HA sensor readings & VPD calculations."""
+        # Auto-apply any due scheduled stage transitions before reading the snapshot
+        applied_transitions = await self.db.async_process_due_stage_changes()
+        for item in applied_transitions:
+            self.hass.bus.async_fire(
+                EVENT_STAGE_CHANGED,
+                {
+                    "plant_id": item["plant_id"],
+                    "stage": item["stage"],
+                    "scheduled": True,
+                },
+            )
+
         snapshot = await self.db.async_get_snapshot()
 
         raw_envs: list[dict[str, Any]] = snapshot["environments"]
@@ -132,11 +145,18 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         stage_rows: list[dict[str, Any]] = snapshot["stage_history"]
         plant_stats: dict[str, dict[str, Any]] = snapshot["plant_stats"]
         nutrient_presets: list[dict[str, Any]] = snapshot.get("nutrient_presets", [])
+        raw_sched_stages: list[dict[str, Any]] = snapshot.get(
+            "scheduled_stage_changes", []
+        )
 
-        # Group stage history by plant
+        # Group stage history & pending scheduled stage changes by plant
         history_by_plant: dict[str, list[dict[str, Any]]] = {}
         for row in stage_rows:
             history_by_plant.setdefault(row["plant_id"], []).append(row)
+
+        sched_by_plant: dict[str, list[dict[str, Any]]] = {}
+        for sched in raw_sched_stages:
+            sched_by_plant.setdefault(sched["plant_id"], []).append(sched)
 
         # Group plants by environment
         plants_by_env: dict[str, list[dict[str, Any]]] = {}
@@ -193,9 +213,11 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "last_ppm": stats.get("last_ppm"),
                 "latest_height_cm": stats.get("latest_height_cm"),
                 "log_count": stats.get("log_count", 0),
+                "planned_log_count": stats.get("planned_log_count", 0),
                 "photo_count": stats.get("photo_count", 0),
                 "cover_photo_url": cover_url,
                 "stage_history": history_by_plant.get(pid, []),
+                "scheduled_stage_changes": sched_by_plant.get(pid, []),
                 "suggested_preset_ids": [pr["id"] for pr in suggested_presets],
             }
             plants_map[pid] = enriched_plant
@@ -302,7 +324,7 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for ph in snapshot["recent_photos"]
         ]
 
-        # Enrich recent_logs with plant & environment names
+        # Enrich recent_logs & planned_logs with plant & environment names
         recent_logs = [
             {
                 **lg,
@@ -315,6 +337,29 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
             for lg in snapshot["recent_logs"]
         ]
+        planned_logs = [
+            {
+                **lg,
+                "plant_name": (
+                    plants_map[lg["plant_id"]]["name"]
+                    if lg.get("plant_id") in plants_map
+                    else None
+                ),
+                "environment_name": env_name_map.get(lg.get("environment_id") or ""),
+            }
+            for lg in snapshot.get("planned_logs", [])
+        ]
+        scheduled_stage_changes = [
+            {
+                **sc,
+                "plant_name": (
+                    plants_map[sc["plant_id"]]["name"]
+                    if sc.get("plant_id") in plants_map
+                    else None
+                ),
+            }
+            for sc in raw_sched_stages
+        ]
 
         self._rebind_state_listeners(tracked_entity_ids)
 
@@ -322,6 +367,8 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "environments": envs_map,
             "plants": plants_map,
             "recent_logs": recent_logs,
+            "planned_logs": planned_logs,
+            "scheduled_stage_changes": scheduled_stage_changes,
             "recent_photos": recent_photos,
             "nutrient_presets": nutrient_presets,
             "summary": {

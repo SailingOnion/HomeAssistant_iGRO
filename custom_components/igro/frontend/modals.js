@@ -11,7 +11,8 @@ import {
   formatDateTime,
   scaleNutrientsForVolume,
   stageBadgeHtml,
-} from "./api.js?v=0.2.1";
+  toLocalDatetimeInput,
+} from "./api.js?v=0.3.0";
 
 function entityOptionsHtml(entities = [], selected = "", placeholder = "None") {
   const opts = [`<option value="">${escapeHtml(placeholder)}</option>`];
@@ -279,8 +280,10 @@ function nutrientUnitSelectHtml(selected = "mL/L") {
 }
 
 export function renderLogModal(defaults, state) {
+  const isEdit = Boolean(defaults.id);
   const selectedType = defaults.log_type || "water";
-  const selectedPlantId = defaults.plant_id || (state.plants?.[0]?.id ?? "");
+  const selectedPlantId =
+    defaults.plant_id !== undefined ? defaults.plant_id || "" : state.plants?.[0]?.id ?? "";
   const selectedPlant = (state.plants || []).find((p) => p.id === selectedPlantId);
   const selectableTypes = ["water", "feed", "training", "defoliation", "measurement", "transplant", "flush", "pest_issue", "note"];
   const showWaterFields = ["water", "feed", "flush"].includes(selectedType);
@@ -292,6 +295,8 @@ export function renderLogModal(defaults, state) {
     : showFeedFields
     ? [{ name: "", amount: "", unit: "mL/L" }]
     : [];
+  const loggedAtLocal = defaults.logged_at_local ?? toLocalDatetimeInput(defaults.logged_at);
+  const selectedStatus = defaults.status || "completed";
 
   const allPresets = state.nutrient_presets || [];
   const suggestedIds = new Set(selectedPlant?.suggested_preset_ids || []);
@@ -302,7 +307,7 @@ export function renderLogModal(defaults, state) {
     <div class="modal-backdrop" data-close-modal="1">
       <div class="modal" role="dialog" aria-modal="true">
         <div class="modal-header">
-          <h3 class="modal-title">📓 Log Grow Action</h3>
+          <h3 class="modal-title">${isEdit ? "✏️ Edit Journal Entry" : "📓 Log Grow Action"}</h3>
           <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
         </div>
         <form id="log-form">
@@ -331,6 +336,17 @@ export function renderLogModal(defaults, state) {
               <div class="form-field">
                 <label class="form-label">Title (optional)</label>
                 <input class="input" name="title" placeholder="${escapeHtml(LOG_TYPE_META[selectedType]?.label || "Summary")}" value="${escapeHtml(defaults.title || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Date & Time (past or future)</label>
+                <input class="input" type="datetime-local" id="log-datetime-input" name="logged_at" value="${escapeHtml(loggedAtLocal)}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Status</label>
+                <select class="select" id="log-status-select" name="status">
+                  <option value="completed" ${selectedStatus === "completed" ? "selected" : ""}>✅ Completed</option>
+                  <option value="planned" ${selectedStatus === "planned" ? "selected" : ""}>📅 Planned / Scheduled</option>
+                </select>
               </div>
 
               ${
@@ -427,7 +443,7 @@ export function renderLogModal(defaults, state) {
                 <div class="form-field full">
                   <label class="form-label">Training Method</label>
                   <select class="select" name="training_method">
-                    ${TRAINING_METHODS.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("")}
+                    ${TRAINING_METHODS.map((m) => `<option value="${escapeHtml(m)}" ${defaults.training_method === m ? "selected" : ""}>${escapeHtml(m)}</option>`).join("")}
                   </select>
                 </div>
               `
@@ -439,7 +455,7 @@ export function renderLogModal(defaults, state) {
                   ? `
                 <div class="form-field full">
                   <label class="form-label">Plant Height (cm)</label>
-                  <input class="input" type="number" step="0.5" name="height_cm" placeholder="e.g. 42.5" />
+                  <input class="input" type="number" step="0.5" name="height_cm" placeholder="e.g. 42.5" value="${defaults.height_cm ?? ""}" />
                 </div>
               `
                   : ""
@@ -453,7 +469,7 @@ export function renderLogModal(defaults, state) {
           </div>
           <div class="modal-footer">
             <button type="button" class="btn" data-close-modal="1">Cancel</button>
-            <button type="submit" class="btn btn-primary">Save Entry</button>
+            <button type="submit" class="btn btn-primary">${isEdit ? "Save Changes" : "Save Entry"}</button>
           </div>
         </form>
       </div>
@@ -591,6 +607,10 @@ export function renderPhotoModal(defaults, state, haEntities) {
                   <label class="form-label">Image File *</label>
                   <input class="input" type="file" name="file" accept="image/*" required />
                 </div>
+                <div class="form-field full">
+                  <label class="form-label">Date Taken (optional — leave blank for now)</label>
+                  <input class="input" type="datetime-local" name="taken_at" />
+                </div>
               `
                   : `
                 <div class="form-field full">
@@ -668,8 +688,14 @@ export function renderStageModal({ plant, targetStage }) {
             </div>
             <input type="hidden" name="today_default" value="${todayLocal}" />
             <div class="form-field">
-              <label class="form-label">Transition Date</label>
-              <input class="input" type="date" name="changed_at" value="${todayLocal}" />
+              <label class="form-label">Transition Date (past to backdate, future to schedule)</label>
+              <input class="input" type="date" id="stage-date-input" name="changed_at" value="${todayLocal}" />
+            </div>
+            <div id="stage-schedule-options" style="display:none;padding:10px 12px;border-radius:10px;background:rgba(14, 165, 233, 0.12);border:1px solid rgba(14, 165, 233, 0.35);font-size:13px;">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                <input type="checkbox" name="auto_apply" checked />
+                <span>Auto-apply stage transition automatically on this date</span>
+              </label>
             </div>
             <div class="form-field">
               <label class="form-label">Note (optional)</label>
@@ -678,7 +704,47 @@ export function renderStageModal({ plant, targetStage }) {
           </div>
           <div class="modal-footer">
             <button type="button" class="btn" data-close-modal="1">Cancel</button>
-            <button type="submit" class="btn btn-primary">Move to ${escapeHtml(targetLabel)}</button>
+            <button type="submit" class="btn btn-primary" id="stage-submit-btn" data-target-label="${escapeHtml(targetLabel)}">Move to ${escapeHtml(targetLabel)}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderStageHistoryModal({ plant, history }, state) {
+  const isEdit = Boolean(history?.id);
+  const stages = state.meta?.stages || Object.keys(STAGE_META);
+  const dateVal = (history?.started_at || new Date().toISOString()).slice(0, 10);
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" style="max-width:460px;" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">${isEdit ? "✏️ Edit Stage History" : "📅 Add Past Stage"}</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="stage-history-form">
+          <div class="modal-body">
+            <div style="font-size:13px;color:var(--igro-text-muted);">Plant: <strong>${escapeHtml(plant.name)}</strong> — dates automatically re-chain chronologically.</div>
+            <div class="form-field">
+              <label class="form-label">Stage</label>
+              <select class="select" name="stage">
+                ${stages.map((s) => `<option value="${s}" ${(history?.stage || "germination") === s ? "selected" : ""}>${STAGE_META[s]?.label || s}</option>`).join("")}
+              </select>
+            </div>
+            <div class="form-field">
+              <label class="form-label">Start Date *</label>
+              <input class="input" type="date" name="started_at" required value="${escapeHtml(dateVal)}" />
+            </div>
+            <div class="form-field">
+              <label class="form-label">Notes (optional)</label>
+              <textarea class="textarea" name="notes" placeholder="Notes about this stage...">${escapeHtml(history?.notes || "")}</textarea>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">${isEdit ? "Save Changes" : "Add Stage"}</button>
           </div>
         </form>
       </div>
