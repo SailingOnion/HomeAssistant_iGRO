@@ -38,6 +38,12 @@ from .const import (
     VPD_STATUS_LOW,
 )
 from .database import IGroDatabase
+from .fertigation import (
+    IGroFertigationController,
+    compute_high_frequency_shot_times,
+    compute_next_fertigation_time,
+    evaluate_probe_sanity,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -67,6 +73,7 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.entry = entry
         self.db = db
         self.media_dir = media_dir
+        self.fertigation = IGroFertigationController(hass, self)
         self._tracked_entities: set[str] = set()
         self._unsub_state_listener: CALLBACK_TYPE | None = None
 
@@ -656,9 +663,187 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
             )
 
+        # Enrich reservoirs, dosing channels & fertigation schedules (Issues #10 & #11)
+        raw_reservoirs: list[dict[str, Any]] = snapshot.get("reservoirs", [])
+        raw_channels: list[dict[str, Any]] = snapshot.get("dosing_channels", [])
+        raw_dosing_runs: list[dict[str, Any]] = snapshot.get("dosing_runs", [])
+        raw_fert_scheds: list[dict[str, Any]] = snapshot.get("fertigation_schedules", [])
+        raw_fert_events: list[dict[str, Any]] = snapshot.get("fertigation_events", [])
+        daily_fert_vol: dict[str, float] = snapshot.get("daily_fert_vol", {})
+        daily_channel_dose: dict[str, float] = snapshot.get("daily_channel_dose", {})
+
+        res_name_map = {r["id"]: r["name"] for r in raw_reservoirs}
+
+        enriched_channels: list[dict[str, Any]] = []
+        channels_by_res: dict[str, list[dict[str, Any]]] = {}
+        for ch in raw_channels:
+            cap = max(1.0, float(ch.get("bottle_capacity_ml") or 1000.0))
+            rem = max(0.0, float(ch.get("bottle_remaining_ml") or 0.0))
+            low_thresh = float(ch.get("low_bottle_alert_ml") or 100.0)
+            enriched_ch = {
+                **ch,
+                "enabled": bool(ch.get("enabled", 1)),
+                "reservoir_name": res_name_map.get(ch["reservoir_id"]),
+                "daily_dosed_ml": daily_channel_dose.get(ch["id"], 0.0),
+                "bottle_pct": round(min(100.0, (rem / cap) * 100.0), 1),
+                "is_low_bottle": rem <= low_thresh,
+            }
+            enriched_channels.append(enriched_ch)
+            channels_by_res.setdefault(ch["reservoir_id"], []).append(enriched_ch)
+
+        reservoirs_map: dict[str, dict[str, Any]] = {}
+        res_names_by_env: dict[str, list[str]] = {}
+        for r in raw_reservoirs:
+            rid = r["id"]
+            for key in (
+                "ec_entity_id",
+                "ph_entity_id",
+                "water_temp_entity_id",
+                "level_entity_id",
+                "low_level_entity_id",
+                "leak_entity_id",
+                "ro_fill_entity_id",
+                "circ_pump_entity_id",
+                "master_feed_pump_entity_id",
+            ):
+                if r.get(key):
+                    tracked_entity_ids.add(r[key])
+
+            ph_val, _ = self._read_float_state(r.get("ph_entity_id"))
+            ec_val, _ = self._read_float_state(r.get("ec_entity_id"))
+            raw_wt, wt_unit = self._read_float_state(r.get("water_temp_entity_id"))
+            water_temp_c = (
+                round(to_celsius(raw_wt, wt_unit), 1) if raw_wt is not None else None
+            )
+            level_pct, _ = self._read_float_state(r.get("level_entity_id"))
+            low_level = self._read_raw_state(r.get("low_level_entity_id")) in (
+                "on",
+                "true",
+                "problem",
+            )
+            leak_detected = self._read_raw_state(r.get("leak_entity_id")) in (
+                "on",
+                "true",
+                "wet",
+                "problem",
+            )
+            probe_ok, probe_err = evaluate_probe_sanity(ph_val, ec_val, r)
+            safety_alert = bool(
+                leak_detected
+                or low_level
+                or not probe_ok
+                or r.get("status") in ("locked_out", "emergency_stop")
+            )
+            r_channels = channels_by_res.get(rid, [])
+            low_bottle_count = sum(1 for c in r_channels if c.get("is_low_bottle"))
+
+            if r.get("environment_id"):
+                res_names_by_env.setdefault(r["environment_id"], []).append(r["name"])
+
+            reservoirs_map[rid] = {
+                **r,
+                "auto_trim_enabled": bool(r.get("auto_trim_enabled")),
+                "auto_ro_topoff": bool(r.get("auto_ro_topoff")),
+                "environment_name": env_name_map.get(r.get("environment_id") or ""),
+                "ph": round(ph_val, 2) if ph_val is not None else None,
+                "ec": round(ec_val, 2) if ec_val is not None else None,
+                "water_temp_c": water_temp_c,
+                "level_pct": round(level_pct, 1) if level_pct is not None else None,
+                "low_level": low_level,
+                "leak_detected": leak_detected,
+                "ro_fill_state": self._read_raw_state(r.get("ro_fill_entity_id")),
+                "circ_pump_state": self._read_raw_state(r.get("circ_pump_entity_id")),
+                "master_feed_pump_state": self._read_raw_state(
+                    r.get("master_feed_pump_entity_id")
+                ),
+                "probe_ok": probe_ok,
+                "probe_error": probe_err,
+                "safety_alert": safety_alert,
+                "channels": r_channels,
+                "channel_count": len(r_channels),
+                "low_bottle_count": low_bottle_count,
+            }
+
+        for eid, env_obj in envs_map.items():
+            env_obj["reservoir_names"] = res_names_by_env.get(eid, [])
+
+        fert_by_plant: dict[str, dict[str, Any]] = {}
+        for sched in raw_fert_scheds:
+            pid = sched["plant_id"]
+            if sched.get("leak_entity_id"):
+                tracked_entity_ids.add(sched["leak_entity_id"])
+            res_obj = reservoirs_map.get(sched.get("reservoir_id") or "")
+            flow = max(0.1, float(sched.get("flow_rate_ml_s") or 10.0))
+            shot_s = (
+                round(float(sched["target_shot_ml"]) / flow, 2)
+                if sched.get("target_shot_ml")
+                else float(sched.get("shot_duration_s") or 15.0)
+            )
+            est_shot_ml = round(shot_s * flow, 1)
+            shot_times = (
+                sched.get("fixed_times") or []
+                if sched.get("schedule_type") == "fixed_times"
+                else compute_high_frequency_shot_times(
+                    sched.get("window_start"),
+                    sched.get("window_end"),
+                    int(sched.get("feeds_per_day") or 4),
+                    int(sched.get("p1_ramp_shots") or 2),
+                    int(sched.get("p1_interval_min") or 30),
+                    int(sched.get("p3_dryback_cutoff_min") or 120),
+                )
+                if (sched.get("schedule_type") or "high_frequency") == "high_frequency"
+                else []
+            )
+            nxt = compute_next_fertigation_time(sched, now_utc)
+            leak = self._read_raw_state(sched.get("leak_entity_id")) in (
+                "on",
+                "true",
+                "wet",
+                "problem",
+            ) or bool(res_obj and res_obj.get("leak_detected"))
+
+            enriched_sched = {
+                **sched,
+                "use_shared_pump": bool(sched.get("use_shared_pump")),
+                "plant_name": (
+                    plants_map[pid]["name"] if pid in plants_map else "Unknown Plant"
+                ),
+                "reservoir_name": res_obj["name"] if res_obj else None,
+                "daily_volume_ml": daily_fert_vol.get(pid, 0.0),
+                "estimated_shot_ml": est_shot_ml,
+                "shot_times": shot_times,
+                "next_fertigation_at": nxt,
+                "leak_detected": leak,
+                "reservoir_low": bool(res_obj and res_obj.get("low_level")),
+            }
+            fert_by_plant[pid] = enriched_sched
+            if pid in plants_map:
+                plants_map[pid]["fertigation"] = enriched_sched
+
+        enriched_dosing_runs = [
+            {
+                **run,
+                "reservoir_name": res_name_map.get(run["reservoir_id"]),
+                "preset_name": preset_name_map.get(run.get("preset_id") or ""),
+            }
+            for run in raw_dosing_runs
+        ]
+        enriched_fert_events = [
+            {
+                **ev,
+                "plant_name": (
+                    plants_map[ev["plant_id"]]["name"]
+                    if ev["plant_id"] in plants_map
+                    else None
+                ),
+                "reservoir_name": res_name_map.get(ev.get("reservoir_id") or ""),
+            }
+            for ev in raw_fert_events
+        ]
+
         self._rebind_state_listeners(tracked_entity_ids)
 
-        return {
+        result = {
             "environments": envs_map,
             "plants": plants_map,
             "recent_logs": recent_logs,
@@ -673,6 +858,11 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "breeding_crosses": enriched_crosses,
             "seed_batches": raw_seed_batches,
             "pheno_hunts": enriched_pheno_hunts,
+            "reservoirs": reservoirs_map,
+            "dosing_channels": enriched_channels,
+            "dosing_runs": enriched_dosing_runs,
+            "fertigation_schedules": fert_by_plant,
+            "fertigation_events": enriched_fert_events,
             "summary": {
                 "active_plants": active_plant_count,
                 "total_plants": len(plants_map),
@@ -691,8 +881,14 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "breeding_crosses": len(enriched_crosses),
                 "pheno_hunts": len(enriched_pheno_hunts),
                 "seed_batches": len(raw_seed_batches),
+                "reservoirs": len(reservoirs_map),
+                "active_fertigation": sum(
+                    1 for s in fert_by_plant.values() if s.get("mode") != "off"
+                ),
             },
         }
+        self.fertigation.schedule_background_check(result)
+        return result
 
     def get_environment_readings_for_plant(self, plant_id: str | None) -> dict[str, Any]:
         """Return current temp_c/humidity/vpd_kpa of a plant's environment for log snapshots."""

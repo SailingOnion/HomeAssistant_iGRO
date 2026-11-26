@@ -98,3 +98,41 @@ class IGroPlantEntity(CoordinatorEntity[IGroCoordinator]):
             model=model,
             via_device=via,
         )
+
+
+class IGroReservoirEntity(CoordinatorEntity[IGroCoordinator]):
+    """Base entity tied to a managed nutrient reservoir."""
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: IGroCoordinator, reservoir_id: str) -> None:
+        super().__init__(coordinator)
+        self._reservoir_id = reservoir_id
+
+    @property
+    def _reservoir(self) -> dict[str, Any] | None:
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.get("reservoirs", {}).get(self._reservoir_id)
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._reservoir is not None
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        res = self._reservoir or {}
+        cap = res.get("capacity_l")
+        model = f"Nutrient Reservoir ({cap:.0f}L)" if cap else "Nutrient Reservoir"
+        via = (
+            (DOMAIN, f"env_{res['environment_id']}")
+            if res.get("environment_id")
+            else (DOMAIN, "igro_hub")
+        )
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"res_{self._reservoir_id}")},
+            name=res.get("name") or f"Reservoir {self._reservoir_id}",
+            manufacturer="iGro",
+            model=model,
+            via_device=via,
+        )

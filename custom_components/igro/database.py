@@ -30,7 +30,7 @@ from .const import (
     STAGE_GERMINATION,
 )
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def utc_now_iso() -> str:
@@ -411,6 +411,137 @@ class IGroDatabase:
                     FOREIGN KEY (plant_id) REFERENCES plants(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS reservoirs (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    environment_id TEXT,
+                    capacity_l REAL NOT NULL DEFAULT 40.0,
+                    current_volume_l REAL,
+                    ec_entity_id TEXT,
+                    ph_entity_id TEXT,
+                    water_temp_entity_id TEXT,
+                    level_entity_id TEXT,
+                    low_level_entity_id TEXT,
+                    leak_entity_id TEXT,
+                    ro_fill_entity_id TEXT,
+                    circ_pump_entity_id TEXT,
+                    master_feed_pump_entity_id TEXT,
+                    target_ec REAL,
+                    target_ph REAL,
+                    ec_tolerance REAL NOT NULL DEFAULT 0.1,
+                    ph_tolerance REAL NOT NULL DEFAULT 0.15,
+                    auto_trim_enabled INTEGER NOT NULL DEFAULT 0,
+                    auto_ro_topoff INTEGER NOT NULL DEFAULT 0,
+                    settle_delay_s INTEGER NOT NULL DEFAULT 180,
+                    ph_min_bound REAL NOT NULL DEFAULT 3.5,
+                    ph_max_bound REAL NOT NULL DEFAULT 9.5,
+                    ec_max_bound REAL NOT NULL DEFAULT 5.0,
+                    status TEXT NOT NULL DEFAULT 'idle',
+                    last_error TEXT,
+                    last_mixed_at TEXT,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (environment_id) REFERENCES environments(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS dosing_channels (
+                    id TEXT PRIMARY KEY,
+                    reservoir_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'additive',
+                    nutrient_name TEXT,
+                    entity_id TEXT,
+                    control_type TEXT NOT NULL DEFAULT 'switch',
+                    esphome_service TEXT,
+                    flow_rate_ml_s REAL NOT NULL DEFAULT 1.0,
+                    mix_order INTEGER NOT NULL DEFAULT 60,
+                    stir_delay_s INTEGER NOT NULL DEFAULT 30,
+                    bottle_capacity_ml REAL NOT NULL DEFAULT 1000.0,
+                    bottle_remaining_ml REAL NOT NULL DEFAULT 1000.0,
+                    low_bottle_alert_ml REAL NOT NULL DEFAULT 100.0,
+                    max_dose_per_cycle_ml REAL NOT NULL DEFAULT 50.0,
+                    max_daily_dose_ml REAL NOT NULL DEFAULT 200.0,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (reservoir_id) REFERENCES reservoirs(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS dosing_runs (
+                    id TEXT PRIMARY KEY,
+                    reservoir_id TEXT NOT NULL,
+                    channel_id TEXT,
+                    preset_id TEXT,
+                    run_type TEXT NOT NULL DEFAULT 'batch_mix',
+                    status TEXT NOT NULL DEFAULT 'completed',
+                    target_volume_l REAL,
+                    dosed_ml REAL NOT NULL DEFAULT 0.0,
+                    steps_json TEXT NOT NULL DEFAULT '[]',
+                    start_ph REAL,
+                    start_ec REAL,
+                    end_ph REAL,
+                    end_ec REAL,
+                    abort_reason TEXT,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    FOREIGN KEY (reservoir_id) REFERENCES reservoirs(id) ON DELETE CASCADE,
+                    FOREIGN KEY (channel_id) REFERENCES dosing_channels(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS fertigation_schedules (
+                    id TEXT PRIMARY KEY,
+                    plant_id TEXT NOT NULL UNIQUE,
+                    reservoir_id TEXT,
+                    mode TEXT NOT NULL DEFAULT 'off',
+                    schedule_type TEXT NOT NULL DEFAULT 'high_frequency',
+                    pump_entity_id TEXT,
+                    valve_entity_id TEXT,
+                    use_shared_pump INTEGER NOT NULL DEFAULT 0,
+                    esphome_watchdog_entity_id TEXT,
+                    flow_rate_ml_s REAL NOT NULL DEFAULT 10.0,
+                    feeds_per_day INTEGER NOT NULL DEFAULT 4,
+                    shot_duration_s REAL NOT NULL DEFAULT 15.0,
+                    target_shot_ml REAL,
+                    window_start TEXT NOT NULL DEFAULT '08:00',
+                    window_end TEXT NOT NULL DEFAULT '20:00',
+                    p1_ramp_shots INTEGER NOT NULL DEFAULT 2,
+                    p1_interval_min INTEGER NOT NULL DEFAULT 30,
+                    p3_dryback_cutoff_min INTEGER NOT NULL DEFAULT 120,
+                    interval_hours REAL NOT NULL DEFAULT 6.0,
+                    fixed_times_json TEXT NOT NULL DEFAULT '[]',
+                    moisture_threshold_pct REAL NOT NULL DEFAULT 35.0,
+                    moisture_cooldown_min INTEGER NOT NULL DEFAULT 90,
+                    max_shot_duration_s REAL NOT NULL DEFAULT 60.0,
+                    max_daily_volume_ml REAL NOT NULL DEFAULT 4000.0,
+                    leak_entity_id TEXT,
+                    auto_log_action TEXT NOT NULL DEFAULT 'feed',
+                    last_fed_at TEXT,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (plant_id) REFERENCES plants(id) ON DELETE CASCADE,
+                    FOREIGN KEY (reservoir_id) REFERENCES reservoirs(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS fertigation_events (
+                    id TEXT PRIMARY KEY,
+                    plant_id TEXT NOT NULL,
+                    schedule_id TEXT,
+                    reservoir_id TEXT,
+                    trigger_type TEXT NOT NULL DEFAULT 'manual',
+                    duration_s REAL NOT NULL DEFAULT 0.0,
+                    volume_ml REAL NOT NULL DEFAULT 0.0,
+                    status TEXT NOT NULL DEFAULT 'completed',
+                    block_reason TEXT,
+                    reservoir_ph REAL,
+                    reservoir_ec REAL,
+                    logged_at TEXT NOT NULL,
+                    FOREIGN KEY (plant_id) REFERENCES plants(id) ON DELETE CASCADE,
+                    FOREIGN KEY (schedule_id) REFERENCES fertigation_schedules(id) ON DELETE SET NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_plants_env ON plants(environment_id);
                 CREATE INDEX IF NOT EXISTS idx_stage_history_plant ON stage_history(plant_id, started_at);
                 CREATE INDEX IF NOT EXISTS idx_logs_plant_logged ON logs(plant_id, logged_at DESC);
@@ -426,6 +557,9 @@ class IGroDatabase:
                 CREATE INDEX IF NOT EXISTS idx_pollen_collected ON pollen_batches(collected_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_crosses_date ON breeding_crosses(pollination_date DESC);
                 CREATE INDEX IF NOT EXISTS idx_pheno_scores_hunt ON pheno_scores(pheno_hunt_id);
+                CREATE INDEX IF NOT EXISTS idx_dosing_channels_res ON dosing_channels(reservoir_id, mix_order ASC);
+                CREATE INDEX IF NOT EXISTS idx_dosing_runs_res ON dosing_runs(reservoir_id, started_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_fert_events_plant ON fertigation_events(plant_id, logged_at DESC);
                 """
             )
             # Safe additive migrations for pre-v6 databases
@@ -580,6 +714,82 @@ class IGroDatabase:
                     "SELECT * FROM pheno_scores ORDER BY pheno_code ASC, created_at ASC"
                 ).fetchall()
             ]
+            reservoirs = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM reservoirs ORDER BY created_at ASC"
+                ).fetchall()
+            ]
+            dosing_channels = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM dosing_channels ORDER BY reservoir_id ASC, mix_order ASC, name ASC"
+                ).fetchall()
+            ]
+            dosing_runs = []
+            for r in conn.execute(
+                "SELECT * FROM dosing_runs ORDER BY started_at DESC LIMIT 60"
+            ).fetchall():
+                item = dict(r)
+                raw_steps = item.pop("steps_json", "[]")
+                try:
+                    item["steps"] = json.loads(raw_steps) if raw_steps else []
+                except (ValueError, TypeError):
+                    item["steps"] = []
+                dosing_runs.append(item)
+
+            fertigation_schedules = []
+            for r in conn.execute(
+                "SELECT * FROM fertigation_schedules ORDER BY created_at ASC"
+            ).fetchall():
+                item = dict(r)
+                raw_times = item.pop("fixed_times_json", "[]")
+                try:
+                    item["fixed_times"] = json.loads(raw_times) if raw_times else []
+                except (ValueError, TypeError):
+                    item["fixed_times"] = []
+                fertigation_schedules.append(item)
+
+            fertigation_events = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM fertigation_events ORDER BY logged_at DESC LIMIT 80"
+                ).fetchall()
+            ]
+
+            today_prefix = utc_now_iso()[:10]
+            daily_fert_vol: dict[str, float] = {}
+            for r in conn.execute(
+                """
+                SELECT plant_id, COALESCE(SUM(volume_ml), 0) AS total_ml
+                FROM fertigation_events
+                WHERE status = 'completed' AND logged_at >= ?
+                GROUP BY plant_id
+                """,
+                (today_prefix,),
+            ).fetchall():
+                daily_fert_vol[r["plant_id"]] = round(float(r["total_ml"]), 1)
+
+            daily_channel_dose: dict[str, float] = {}
+            for r in conn.execute(
+                """
+                SELECT steps_json FROM dosing_runs
+                WHERE status = 'completed' AND started_at >= ?
+                """,
+                (today_prefix,),
+            ).fetchall():
+                try:
+                    steps = json.loads(r["steps_json"] or "[]")
+                except (ValueError, TypeError):
+                    steps = []
+                for st in steps:
+                    cid = st.get("channel_id")
+                    if cid:
+                        daily_channel_dose[cid] = round(
+                            daily_channel_dose.get(cid, 0.0)
+                            + float(st.get("dose_ml") or 0.0),
+                            2,
+                        )
 
             # Per-plant aggregates (completed logs only — planned future entries excluded)
             plant_stats: dict[str, dict[str, Any]] = {}
@@ -698,6 +908,13 @@ class IGroDatabase:
                 "breeding_crosses": breeding_crosses,
                 "pheno_hunts": pheno_hunts,
                 "pheno_scores": pheno_scores,
+                "reservoirs": reservoirs,
+                "dosing_channels": dosing_channels,
+                "dosing_runs": dosing_runs,
+                "fertigation_schedules": fertigation_schedules,
+                "fertigation_events": fertigation_events,
+                "daily_fert_vol": daily_fert_vol,
+                "daily_channel_dose": daily_channel_dose,
                 "totals": {
                     "logs": total_logs,
                     "photos": total_photos,
@@ -3014,3 +3231,590 @@ class IGroDatabase:
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM pheno_scores WHERE id = ?", (score_id,))
             return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Reservoirs, Dosing Channels & Dosing Runs CRUD (Issue #11)
+    # ------------------------------------------------------------------
+    async def async_create_reservoir(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create a managed nutrient reservoir."""
+        return await self._run(self._create_reservoir_sync, data)
+
+    def _create_reservoir_sync(self, data: dict[str, Any]) -> dict[str, Any]:
+        res_id = data.get("id") or uuid.uuid4().hex[:12]
+        now = utc_now_iso()
+        record = {
+            "id": res_id,
+            "name": (data.get("name") or "Nutrient Reservoir").strip(),
+            "environment_id": data.get("environment_id") or None,
+            "capacity_l": float(data.get("capacity_l") or 40.0),
+            "current_volume_l": (
+                float(data["current_volume_l"])
+                if data.get("current_volume_l") not in (None, "")
+                else None
+            ),
+            "ec_entity_id": data.get("ec_entity_id") or None,
+            "ph_entity_id": data.get("ph_entity_id") or None,
+            "water_temp_entity_id": data.get("water_temp_entity_id") or None,
+            "level_entity_id": data.get("level_entity_id") or None,
+            "low_level_entity_id": data.get("low_level_entity_id") or None,
+            "leak_entity_id": data.get("leak_entity_id") or None,
+            "ro_fill_entity_id": data.get("ro_fill_entity_id") or None,
+            "circ_pump_entity_id": data.get("circ_pump_entity_id") or None,
+            "master_feed_pump_entity_id": data.get("master_feed_pump_entity_id") or None,
+            "target_ec": (
+                float(data["target_ec"])
+                if data.get("target_ec") not in (None, "")
+                else None
+            ),
+            "target_ph": (
+                float(data["target_ph"])
+                if data.get("target_ph") not in (None, "")
+                else None
+            ),
+            "ec_tolerance": float(data.get("ec_tolerance") or 0.1),
+            "ph_tolerance": float(data.get("ph_tolerance") or 0.15),
+            "auto_trim_enabled": 1 if data.get("auto_trim_enabled") else 0,
+            "auto_ro_topoff": 1 if data.get("auto_ro_topoff") else 0,
+            "settle_delay_s": int(data.get("settle_delay_s") or 180),
+            "ph_min_bound": float(data.get("ph_min_bound") or 3.5),
+            "ph_max_bound": float(data.get("ph_max_bound") or 9.5),
+            "ec_max_bound": float(data.get("ec_max_bound") or 5.0),
+            "status": data.get("status") or "idle",
+            "last_error": None,
+            "last_mixed_at": None,
+            "notes": data.get("notes") or None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        cols = ", ".join(record.keys())
+        ph = ", ".join(["?"] * len(record))
+        with self._connect() as conn:
+            conn.execute(
+                f"INSERT INTO reservoirs ({cols}) VALUES ({ph})",
+                list(record.values()),
+            )
+            row = conn.execute(
+                "SELECT * FROM reservoirs WHERE id = ?", (res_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_update_reservoir(
+        self, reservoir_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Update a reservoir configuration or status."""
+        return await self._run(self._update_reservoir_sync, reservoir_id, data)
+
+    def _update_reservoir_sync(
+        self, reservoir_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        allowed = {
+            "name",
+            "environment_id",
+            "capacity_l",
+            "current_volume_l",
+            "ec_entity_id",
+            "ph_entity_id",
+            "water_temp_entity_id",
+            "level_entity_id",
+            "low_level_entity_id",
+            "leak_entity_id",
+            "ro_fill_entity_id",
+            "circ_pump_entity_id",
+            "master_feed_pump_entity_id",
+            "target_ec",
+            "target_ph",
+            "ec_tolerance",
+            "ph_tolerance",
+            "auto_trim_enabled",
+            "auto_ro_topoff",
+            "settle_delay_s",
+            "ph_min_bound",
+            "ph_max_bound",
+            "ec_max_bound",
+            "status",
+            "last_error",
+            "last_mixed_at",
+            "notes",
+        }
+        updates: dict[str, Any] = {k: v for k, v in data.items() if k in allowed}
+        if "name" in updates and not updates["name"]:
+            updates.pop("name")
+        for bf in ("auto_trim_enabled", "auto_ro_topoff"):
+            if bf in updates:
+                updates[bf] = 1 if updates[bf] else 0
+        for ff in (
+            "capacity_l",
+            "current_volume_l",
+            "target_ec",
+            "target_ph",
+            "ec_tolerance",
+            "ph_tolerance",
+            "ph_min_bound",
+            "ph_max_bound",
+            "ec_max_bound",
+        ):
+            if ff in updates:
+                updates[ff] = (
+                    float(updates[ff]) if updates[ff] not in (None, "") else None
+                )
+        if "settle_delay_s" in updates and updates["settle_delay_s"] not in (None, ""):
+            updates["settle_delay_s"] = int(updates["settle_delay_s"])
+
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM reservoirs WHERE id = ?", (reservoir_id,)
+            ).fetchone()
+            if not existing:
+                return None
+            if updates:
+                updates["updated_at"] = utc_now_iso()
+                set_clause = ", ".join(f"{k} = ?" for k in updates)
+                conn.execute(
+                    f"UPDATE reservoirs SET {set_clause} WHERE id = ?",
+                    [*updates.values(), reservoir_id],
+                )
+            row = conn.execute(
+                "SELECT * FROM reservoirs WHERE id = ?", (reservoir_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_delete_reservoir(self, reservoir_id: str) -> bool:
+        """Delete a reservoir and its dosing channels."""
+        return await self._run(self._delete_reservoir_sync, reservoir_id)
+
+    def _delete_reservoir_sync(self, reservoir_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM reservoirs WHERE id = ?", (reservoir_id,))
+            return cur.rowcount > 0
+
+    async def async_create_dosing_channel(
+        self, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Create a peristaltic dosing pump channel."""
+        return await self._run(self._create_dosing_channel_sync, data)
+
+    def _create_dosing_channel_sync(self, data: dict[str, Any]) -> dict[str, Any]:
+        ch_id = data.get("id") or uuid.uuid4().hex[:12]
+        now = utc_now_iso()
+        role = data.get("role") or "additive"
+        default_orders = {
+            "silica": 10,
+            "cal_mag": 20,
+            "base_a": 30,
+            "base_b": 40,
+            "bloom_pk": 50,
+            "additive": 60,
+            "ph_down": 90,
+            "ph_up": 95,
+        }
+        cap = float(data.get("bottle_capacity_ml") or 1000.0)
+        rem = (
+            float(data["bottle_remaining_ml"])
+            if data.get("bottle_remaining_ml") not in (None, "")
+            else cap
+        )
+        record = {
+            "id": ch_id,
+            "reservoir_id": data["reservoir_id"],
+            "name": (data.get("name") or "Dosing Channel").strip(),
+            "role": role,
+            "nutrient_name": data.get("nutrient_name") or data.get("name") or None,
+            "entity_id": data.get("entity_id") or None,
+            "control_type": data.get("control_type") or "switch",
+            "esphome_service": data.get("esphome_service") or None,
+            "flow_rate_ml_s": max(0.05, float(data.get("flow_rate_ml_s") or 1.0)),
+            "mix_order": (
+                int(data["mix_order"])
+                if data.get("mix_order") not in (None, "")
+                else default_orders.get(role, 60)
+            ),
+            "stir_delay_s": int(data.get("stir_delay_s") or 30),
+            "bottle_capacity_ml": cap,
+            "bottle_remaining_ml": rem,
+            "low_bottle_alert_ml": float(data.get("low_bottle_alert_ml") or 100.0),
+            "max_dose_per_cycle_ml": float(data.get("max_dose_per_cycle_ml") or 50.0),
+            "max_daily_dose_ml": float(data.get("max_daily_dose_ml") or 200.0),
+            "enabled": 1 if data.get("enabled", True) else 0,
+            "notes": data.get("notes") or None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        cols = ", ".join(record.keys())
+        ph = ", ".join(["?"] * len(record))
+        with self._connect() as conn:
+            conn.execute(
+                f"INSERT INTO dosing_channels ({cols}) VALUES ({ph})",
+                list(record.values()),
+            )
+            row = conn.execute(
+                "SELECT * FROM dosing_channels WHERE id = ?", (ch_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_update_dosing_channel(
+        self, channel_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Update a dosing pump channel."""
+        return await self._run(self._update_dosing_channel_sync, channel_id, data)
+
+    def _update_dosing_channel_sync(
+        self, channel_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        allowed = {
+            "name",
+            "role",
+            "nutrient_name",
+            "entity_id",
+            "control_type",
+            "esphome_service",
+            "flow_rate_ml_s",
+            "mix_order",
+            "stir_delay_s",
+            "bottle_capacity_ml",
+            "bottle_remaining_ml",
+            "low_bottle_alert_ml",
+            "max_dose_per_cycle_ml",
+            "max_daily_dose_ml",
+            "enabled",
+            "notes",
+        }
+        updates: dict[str, Any] = {k: v for k, v in data.items() if k in allowed}
+        if "name" in updates and not updates["name"]:
+            updates.pop("name")
+        if "enabled" in updates:
+            updates["enabled"] = 1 if updates["enabled"] else 0
+        for ff in (
+            "flow_rate_ml_s",
+            "bottle_capacity_ml",
+            "bottle_remaining_ml",
+            "low_bottle_alert_ml",
+            "max_dose_per_cycle_ml",
+            "max_daily_dose_ml",
+        ):
+            if ff in updates and updates[ff] not in (None, ""):
+                updates[ff] = float(updates[ff])
+        for intf in ("mix_order", "stir_delay_s"):
+            if intf in updates and updates[intf] not in (None, ""):
+                updates[intf] = int(updates[intf])
+
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM dosing_channels WHERE id = ?", (channel_id,)
+            ).fetchone()
+            if not existing:
+                return None
+            if updates:
+                updates["updated_at"] = utc_now_iso()
+                set_clause = ", ".join(f"{k} = ?" for k in updates)
+                conn.execute(
+                    f"UPDATE dosing_channels SET {set_clause} WHERE id = ?",
+                    [*updates.values(), channel_id],
+                )
+            row = conn.execute(
+                "SELECT * FROM dosing_channels WHERE id = ?", (channel_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_consume_channel_bottle(
+        self, channel_id: str, dosed_ml: float
+    ) -> dict[str, Any] | None:
+        """Subtract dosed volume from a channel's remaining bottle inventory."""
+        return await self._run(self._consume_channel_bottle_sync, channel_id, dosed_ml)
+
+    def _consume_channel_bottle_sync(
+        self, channel_id: str, dosed_ml: float
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT bottle_remaining_ml FROM dosing_channels WHERE id = ?",
+                (channel_id,),
+            ).fetchone()
+            if not row:
+                return None
+            new_rem = max(0.0, round(float(row["bottle_remaining_ml"]) - dosed_ml, 2))
+            conn.execute(
+                "UPDATE dosing_channels SET bottle_remaining_ml = ?, updated_at = ? WHERE id = ?",
+                (new_rem, utc_now_iso(), channel_id),
+            )
+            updated = conn.execute(
+                "SELECT * FROM dosing_channels WHERE id = ?", (channel_id,)
+            ).fetchone()
+            return dict(updated)
+
+    async def async_delete_dosing_channel(self, channel_id: str) -> bool:
+        """Delete a dosing channel."""
+        return await self._run(self._delete_dosing_channel_sync, channel_id)
+
+    def _delete_dosing_channel_sync(self, channel_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM dosing_channels WHERE id = ?", (channel_id,)
+            )
+            return cur.rowcount > 0
+
+    async def async_record_dosing_run(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Record a batch-mix, auto-trim, or manual dosing run audit log."""
+        return await self._run(self._record_dosing_run_sync, data)
+
+    def _record_dosing_run_sync(self, data: dict[str, Any]) -> dict[str, Any]:
+        run_id = data.get("id") or uuid.uuid4().hex[:12]
+        now = utc_now_iso()
+        steps = data.get("steps") or []
+        record = {
+            "id": run_id,
+            "reservoir_id": data["reservoir_id"],
+            "channel_id": data.get("channel_id") or None,
+            "preset_id": data.get("preset_id") or None,
+            "run_type": data.get("run_type") or "batch_mix",
+            "status": data.get("status") or "completed",
+            "target_volume_l": data.get("target_volume_l"),
+            "dosed_ml": float(data.get("dosed_ml") or 0.0),
+            "steps_json": json.dumps(steps),
+            "start_ph": data.get("start_ph"),
+            "start_ec": data.get("start_ec"),
+            "end_ph": data.get("end_ph"),
+            "end_ec": data.get("end_ec"),
+            "abort_reason": data.get("abort_reason") or None,
+            "started_at": data.get("started_at") or now,
+            "completed_at": data.get("completed_at") or now,
+        }
+        cols = ", ".join(record.keys())
+        ph = ", ".join(["?"] * len(record))
+        with self._connect() as conn:
+            conn.execute(
+                f"INSERT INTO dosing_runs ({cols}) VALUES ({ph})",
+                list(record.values()),
+            )
+            row = conn.execute(
+                "SELECT * FROM dosing_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            out = dict(row)
+            out["steps"] = json.loads(out.pop("steps_json", "[]") or "[]")
+            return out
+
+    async def async_get_daily_channel_dose(self, channel_id: str) -> float:
+        """Return total mL dosed on a channel today (UTC)."""
+        return await self._run(self._get_daily_channel_dose_sync, channel_id)
+
+    def _get_daily_channel_dose_sync(self, channel_id: str) -> float:
+        today_prefix = utc_now_iso()[:10]
+        total = 0.0
+        with self._connect() as conn:
+            for r in conn.execute(
+                "SELECT steps_json FROM dosing_runs WHERE status = 'completed' AND started_at >= ?",
+                (today_prefix,),
+            ).fetchall():
+                try:
+                    steps = json.loads(r["steps_json"] or "[]")
+                except (ValueError, TypeError):
+                    steps = []
+                for st in steps:
+                    if st.get("channel_id") == channel_id:
+                        total += float(st.get("dose_ml") or 0.0)
+        return round(total, 2)
+
+    # ------------------------------------------------------------------
+    # Per-Plant Fertigation Schedules & Events CRUD (Issue #10)
+    # ------------------------------------------------------------------
+    async def async_upsert_fertigation_schedule(
+        self, plant_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Create or update a plant's high-frequency fertigation schedule."""
+        return await self._run(
+            self._upsert_fertigation_schedule_sync, plant_id, data
+        )
+
+    def _upsert_fertigation_schedule_sync(
+        self, plant_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        now = utc_now_iso()
+        allowed = {
+            "reservoir_id",
+            "mode",
+            "schedule_type",
+            "pump_entity_id",
+            "valve_entity_id",
+            "use_shared_pump",
+            "esphome_watchdog_entity_id",
+            "flow_rate_ml_s",
+            "feeds_per_day",
+            "shot_duration_s",
+            "target_shot_ml",
+            "window_start",
+            "window_end",
+            "p1_ramp_shots",
+            "p1_interval_min",
+            "p3_dryback_cutoff_min",
+            "interval_hours",
+            "moisture_threshold_pct",
+            "moisture_cooldown_min",
+            "max_shot_duration_s",
+            "max_daily_volume_ml",
+            "leak_entity_id",
+            "auto_log_action",
+            "last_fed_at",
+            "last_error",
+        }
+        updates: dict[str, Any] = {k: v for k, v in data.items() if k in allowed}
+        if "fixed_times" in data:
+            updates["fixed_times_json"] = json.dumps(data["fixed_times"] or [])
+        if "use_shared_pump" in updates:
+            updates["use_shared_pump"] = 1 if updates["use_shared_pump"] else 0
+        for ff in (
+            "flow_rate_ml_s",
+            "shot_duration_s",
+            "target_shot_ml",
+            "interval_hours",
+            "moisture_threshold_pct",
+            "max_shot_duration_s",
+            "max_daily_volume_ml",
+        ):
+            if ff in updates:
+                updates[ff] = (
+                    float(updates[ff]) if updates[ff] not in (None, "") else None
+                )
+        for intf in (
+            "feeds_per_day",
+            "p1_ramp_shots",
+            "p1_interval_min",
+            "p3_dryback_cutoff_min",
+            "moisture_cooldown_min",
+        ):
+            if intf in updates and updates[intf] not in (None, ""):
+                updates[intf] = int(updates[intf])
+
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM fertigation_schedules WHERE plant_id = ?", (plant_id,)
+            ).fetchone()
+            if existing:
+                sched_id = existing["id"]
+                if updates:
+                    updates["updated_at"] = now
+                    set_clause = ", ".join(f"{k} = ?" for k in updates)
+                    conn.execute(
+                        f"UPDATE fertigation_schedules SET {set_clause} WHERE id = ?",
+                        [*updates.values(), sched_id],
+                    )
+            else:
+                sched_id = data.get("id") or uuid.uuid4().hex[:12]
+                record: dict[str, Any] = {
+                    "id": sched_id,
+                    "plant_id": plant_id,
+                    "reservoir_id": None,
+                    "mode": "off",
+                    "schedule_type": "high_frequency",
+                    "pump_entity_id": None,
+                    "valve_entity_id": None,
+                    "use_shared_pump": 0,
+                    "esphome_watchdog_entity_id": None,
+                    "flow_rate_ml_s": 10.0,
+                    "feeds_per_day": 4,
+                    "shot_duration_s": 15.0,
+                    "target_shot_ml": None,
+                    "window_start": "08:00",
+                    "window_end": "20:00",
+                    "p1_ramp_shots": 2,
+                    "p1_interval_min": 30,
+                    "p3_dryback_cutoff_min": 120,
+                    "interval_hours": 6.0,
+                    "fixed_times_json": "[]",
+                    "moisture_threshold_pct": 35.0,
+                    "moisture_cooldown_min": 90,
+                    "max_shot_duration_s": 60.0,
+                    "max_daily_volume_ml": 4000.0,
+                    "leak_entity_id": None,
+                    "auto_log_action": "feed",
+                    "last_fed_at": None,
+                    "last_error": None,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                for k, v in updates.items():
+                    if v is not None or k in (
+                        "reservoir_id",
+                        "pump_entity_id",
+                        "valve_entity_id",
+                        "esphome_watchdog_entity_id",
+                        "target_shot_ml",
+                        "leak_entity_id",
+                        "last_fed_at",
+                        "last_error",
+                    ):
+                        record[k] = v
+                cols = ", ".join(record.keys())
+                ph = ", ".join(["?"] * len(record))
+                conn.execute(
+                    f"INSERT INTO fertigation_schedules ({cols}) VALUES ({ph})",
+                    list(record.values()),
+                )
+
+            row = conn.execute(
+                "SELECT * FROM fertigation_schedules WHERE id = ?", (sched_id,)
+            ).fetchone()
+            out = dict(row)
+            out["fixed_times"] = json.loads(out.pop("fixed_times_json", "[]") or "[]")
+            return out
+
+    async def async_delete_fertigation_schedule(self, plant_id: str) -> bool:
+        """Delete a plant's fertigation schedule."""
+        return await self._run(self._delete_fertigation_schedule_sync, plant_id)
+
+    def _delete_fertigation_schedule_sync(self, plant_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM fertigation_schedules WHERE plant_id = ?", (plant_id,)
+            )
+            return cur.rowcount > 0
+
+    async def async_record_fertigation_event(
+        self, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Record a fertigation shot or safety-blocked attempt."""
+        return await self._run(self._record_fertigation_event_sync, data)
+
+    def _record_fertigation_event_sync(self, data: dict[str, Any]) -> dict[str, Any]:
+        ev_id = data.get("id") or uuid.uuid4().hex[:12]
+        now = data.get("logged_at") or utc_now_iso()
+        record = {
+            "id": ev_id,
+            "plant_id": data["plant_id"],
+            "schedule_id": data.get("schedule_id") or None,
+            "reservoir_id": data.get("reservoir_id") or None,
+            "trigger_type": data.get("trigger_type") or "manual",
+            "duration_s": float(data.get("duration_s") or 0.0),
+            "volume_ml": float(data.get("volume_ml") or 0.0),
+            "status": data.get("status") or "completed",
+            "block_reason": data.get("block_reason") or None,
+            "reservoir_ph": data.get("reservoir_ph"),
+            "reservoir_ec": data.get("reservoir_ec"),
+            "logged_at": now,
+        }
+        cols = ", ".join(record.keys())
+        ph = ", ".join(["?"] * len(record))
+        with self._connect() as conn:
+            conn.execute(
+                f"INSERT INTO fertigation_events ({cols}) VALUES ({ph})",
+                list(record.values()),
+            )
+            row = conn.execute(
+                "SELECT * FROM fertigation_events WHERE id = ?", (ev_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_get_daily_fertigation_volume(self, plant_id: str) -> float:
+        """Return total automated fertigation volume (mL) delivered today (UTC)."""
+        return await self._run(self._get_daily_fertigation_volume_sync, plant_id)
+
+    def _get_daily_fertigation_volume_sync(self, plant_id: str) -> float:
+        today_prefix = utc_now_iso()[:10]
+        with self._connect() as conn:
+            val = conn.execute(
+                """
+                SELECT COALESCE(SUM(volume_ml), 0)
+                FROM fertigation_events
+                WHERE plant_id = ? AND status = 'completed' AND logged_at >= ?
+                """,
+                (plant_id, today_prefix),
+            ).fetchone()[0]
+            return round(float(val or 0.0), 1)

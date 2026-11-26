@@ -19,6 +19,7 @@ from homeassistant.const import (
     UnitOfMass,
     UnitOfTemperature,
     UnitOfTime,
+    UnitOfVolume,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
@@ -27,7 +28,12 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, SIGNAL_ENTITIES_CHANGED
 from .coordinator import IGroCoordinator
-from .entity import IGroEnvironmentEntity, IGroPlantEntity, IGroSummaryEntity
+from .entity import (
+    IGroEnvironmentEntity,
+    IGroPlantEntity,
+    IGroReservoirEntity,
+    IGroSummaryEntity,
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -259,6 +265,84 @@ PLANT_SENSORS: tuple[IGroSensorDesc, ...] = (
             "is_keeper": (p.get("harvest") or {}).get("is_keeper"),
         },
     ),
+    IGroSensorDesc(
+        key="next_fertigation",
+        name="Next Feed",
+        icon="mdi:clock-outline",
+        value_fn=lambda p: (p.get("fertigation") or {}).get("next_fertigation_at"),
+        attrs_fn=lambda p: {
+            "mode": (p.get("fertigation") or {}).get("mode"),
+            "feeds_per_day": (p.get("fertigation") or {}).get("feeds_per_day"),
+            "shot_times": (p.get("fertigation") or {}).get("shot_times"),
+        },
+    ),
+    IGroSensorDesc(
+        key="daily_fertigation_ml",
+        name="Daily Fertigation Volume",
+        icon="mdi:water-pump",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfVolume.MILLILITERS,
+        value_fn=lambda p: (p.get("fertigation") or {}).get("daily_volume_ml", 0.0),
+        attrs_fn=lambda p: {
+            "max_daily_volume_ml": (p.get("fertigation") or {}).get(
+                "max_daily_volume_ml"
+            ),
+            "last_fed_at": (p.get("fertigation") or {}).get("last_fed_at"),
+        },
+    ),
+)
+
+RESERVOIR_SENSORS: tuple[IGroSensorDesc, ...] = (
+    IGroSensorDesc(
+        key="ph",
+        name="pH",
+        icon="mdi:ph",
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda r: r.get("ph"),
+        attrs_fn=lambda r: {"target_ph": r.get("target_ph")},
+    ),
+    IGroSensorDesc(
+        key="ec",
+        name="EC",
+        icon="mdi:flash-outline",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="mS/cm",
+        value_fn=lambda r: r.get("ec"),
+        attrs_fn=lambda r: {"target_ec": r.get("target_ec")},
+    ),
+    IGroSensorDesc(
+        key="water_temp",
+        name="Water Temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        value_fn=lambda r: r.get("water_temp_c"),
+    ),
+    IGroSensorDesc(
+        key="level",
+        name="Water Level",
+        icon="mdi:cup-water",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+        value_fn=lambda r: r.get("level_pct"),
+        attrs_fn=lambda r: {
+            "capacity_l": r.get("capacity_l"),
+            "current_volume_l": r.get("current_volume_l"),
+            "low_level": r.get("low_level"),
+        },
+    ),
+    IGroSensorDesc(
+        key="status",
+        name="Status",
+        icon="mdi:flask-round-bottom",
+        value_fn=lambda r: r.get("status") or "idle",
+        attrs_fn=lambda r: {
+            "auto_trim_enabled": r.get("auto_trim_enabled"),
+            "last_mixed_at": r.get("last_mixed_at"),
+            "last_error": r.get("last_error"),
+            "low_bottle_channels": r.get("low_bottle_count", 0),
+        },
+    ),
 )
 
 
@@ -337,6 +421,33 @@ class IGroPlantSensor(IGroPlantEntity, SensorEntity):
         return self.entity_description.attrs_fn(plant)
 
 
+class IGroReservoirSensor(IGroReservoirEntity, SensorEntity):
+    """Reservoir-scoped sensor (pH, EC, Water Temp, Level, Status)."""
+
+    entity_description: IGroSensorDesc
+
+    def __init__(
+        self, coordinator: IGroCoordinator, reservoir_id: str, desc: IGroSensorDesc
+    ) -> None:
+        super().__init__(coordinator, reservoir_id)
+        self.entity_description = desc
+        self._attr_unique_id = f"{DOMAIN}_res_{reservoir_id}_{desc.key}"
+
+    @property
+    def native_value(self) -> Any:
+        res = self._reservoir
+        if res is None:
+            return None
+        return self.entity_description.value_fn(res)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        res = self._reservoir
+        if res is None or not self.entity_description.attrs_fn:
+            return None
+        return self.entity_description.attrs_fn(res)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -347,6 +458,7 @@ async def async_setup_entry(
 
     tracked_envs: set[str] = set()
     tracked_plants: set[str] = set()
+    tracked_reservoirs: set[str] = set()
 
     # Add global summary sensors once
     async_add_entities(
@@ -358,6 +470,7 @@ async def async_setup_entry(
         data = coordinator.data or {}
         current_envs = set(data.get("environments", {}).keys())
         current_plants = set(data.get("plants", {}).keys())
+        current_reservoirs = set(data.get("reservoirs", {}).keys())
 
         new_entities: list[SensorEntity] = []
         for eid in current_envs - tracked_envs:
@@ -370,13 +483,19 @@ async def async_setup_entry(
                 new_entities.append(IGroPlantSensor(coordinator, pid, desc))
             tracked_plants.add(pid)
 
+        for rid in current_reservoirs - tracked_reservoirs:
+            for desc in RESERVOIR_SENSORS:
+                new_entities.append(IGroReservoirSensor(coordinator, rid, desc))
+            tracked_reservoirs.add(rid)
+
         if new_entities:
             async_add_entities(new_entities)
 
-        # Clean up deleted environments / plants from registries
+        # Clean up deleted environments / plants / reservoirs from registries
         removed_envs = tracked_envs - current_envs
         removed_plants = tracked_plants - current_plants
-        if removed_envs or removed_plants:
+        removed_res = tracked_reservoirs - current_reservoirs
+        if removed_envs or removed_plants or removed_res:
             ent_reg = er.async_get(hass)
             dev_reg = dr.async_get(hass)
             for eid in removed_envs:
@@ -394,6 +513,14 @@ async def async_setup_entry(
                     if ent_id := ent_reg.async_get_entity_id("sensor", DOMAIN, uid):
                         ent_reg.async_remove(ent_id)
                 if dev := dev_reg.async_get_device(identifiers={(DOMAIN, f"plant_{pid}")}):
+                    dev_reg.async_remove_device(dev.id)
+            for rid in removed_res:
+                tracked_reservoirs.discard(rid)
+                for desc in RESERVOIR_SENSORS:
+                    uid = f"{DOMAIN}_res_{rid}_{desc.key}"
+                    if ent_id := ent_reg.async_get_entity_id("sensor", DOMAIN, uid):
+                        ent_reg.async_remove(ent_id)
+                if dev := dev_reg.async_get_device(identifiers={(DOMAIN, f"res_{rid}")}):
                     dev_reg.async_remove_device(dev.id)
 
     _sync_entities()

@@ -26,7 +26,11 @@ from .const import (
     SERVICE_COMPLETE_REMINDER,
     SERVICE_CREATE_PLANT,
     SERVICE_CREATE_REMINDER,
+    SERVICE_DOSE_CHANNEL,
+    SERVICE_EMERGENCY_STOP,
+    SERVICE_FERTIGATE_PLANT,
     SERVICE_LOG_ACTION,
+    SERVICE_MIX_RESERVOIR_BATCH,
     SERVICE_RECORD_HARVEST,
     SERVICE_SET_STAGE,
 )
@@ -396,6 +400,92 @@ async def async_register_services(hass: HomeAssistant) -> None:
         ),
     )
 
+    async def handle_fertigate_plant(call: ServiceCall) -> None:
+        coordinator = _get_coordinator(hass)
+        plant_id = _resolve_plant_id(coordinator, call.data["plant"])
+        try:
+            await coordinator.fertigation.async_run_fertigation_shot(
+                plant_id,
+                trigger_type="manual",
+                duration_s=call.data.get("duration_s"),
+            )
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+
+    async def handle_mix_reservoir_batch(call: ServiceCall) -> None:
+        coordinator = _get_coordinator(hass)
+        preset = _resolve_preset(coordinator, call.data["preset"])
+        try:
+            await coordinator.fertigation.async_run_batch_mix(
+                call.data["reservoir_id"],
+                str(preset["id"]),
+                float(call.data["target_volume_l"]),
+            )
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+
+    async def handle_dose_channel(call: ServiceCall) -> None:
+        coordinator = _get_coordinator(hass)
+        try:
+            await coordinator.fertigation.async_dose_channel(
+                call.data["channel_id"],
+                float(call.data["dose_ml"]),
+                run_type=call.data.get("run_type", "manual_dose"),
+            )
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+
+    async def handle_emergency_stop(call: ServiceCall) -> None:
+        coordinator = _get_coordinator(hass)
+        await coordinator.fertigation.async_emergency_stop(
+            call.data.get("reason") or "Emergency stop service called"
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_FERTIGATE_PLANT,
+        handle_fertigate_plant,
+        schema=vol.Schema(
+            {
+                vol.Required("plant"): cv.string,
+                vol.Optional("duration_s"): vol.Coerce(float),
+            }
+        ),
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_MIX_RESERVOIR_BATCH,
+        handle_mix_reservoir_batch,
+        schema=vol.Schema(
+            {
+                vol.Required("reservoir_id"): cv.string,
+                vol.Required("preset"): cv.string,
+                vol.Required("target_volume_l"): vol.Coerce(float),
+            }
+        ),
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_DOSE_CHANNEL,
+        handle_dose_channel,
+        schema=vol.Schema(
+            {
+                vol.Required("channel_id"): cv.string,
+                vol.Required("dose_ml"): vol.Coerce(float),
+                vol.Optional("run_type", default="manual_dose"): cv.string,
+            }
+        ),
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_EMERGENCY_STOP,
+        handle_emergency_stop,
+        schema=vol.Schema({vol.Optional("reason"): cv.string}),
+    )
+
 
 async def async_unregister_services(hass: HomeAssistant) -> None:
     """Unregister iGro services on unload."""
@@ -408,6 +498,10 @@ async def async_unregister_services(hass: HomeAssistant) -> None:
         SERVICE_RECORD_HARVEST,
         SERVICE_CREATE_REMINDER,
         SERVICE_COMPLETE_REMINDER,
+        SERVICE_FERTIGATE_PLANT,
+        SERVICE_MIX_RESERVOIR_BATCH,
+        SERVICE_DOSE_CHANNEL,
+        SERVICE_EMERGENCY_STOP,
     ):
         if hass.services.has_service(DOMAIN, svc):
             hass.services.async_remove(DOMAIN, svc)

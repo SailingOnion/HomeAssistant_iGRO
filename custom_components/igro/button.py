@@ -17,7 +17,7 @@ from .const import (
     SIGNAL_ENTITIES_CHANGED,
 )
 from .coordinator import IGroCoordinator
-from .entity import IGroPlantEntity
+from .entity import IGroPlantEntity, IGroReservoirEntity
 from .http_api import async_capture_camera_photo
 
 
@@ -80,6 +80,43 @@ class IGroCapturePhotoButton(IGroPlantEntity, ButtonEntity):
         )
 
 
+class IGroManualPulseFeedButton(IGroPlantEntity, ButtonEntity):
+    """Button that fires a single manual fertigation shot for a plant."""
+
+    _attr_name = "Manual Pulse Feed"
+    _attr_icon = "mdi:water-pump"
+
+    def __init__(self, coordinator: IGroCoordinator, plant_id: str) -> None:
+        super().__init__(coordinator, plant_id)
+        self._attr_unique_id = f"{DOMAIN}_plant_{plant_id}_manual_feed_shot"
+
+    async def async_press(self) -> None:
+        try:
+            await self.coordinator.fertigation.async_run_fertigation_shot(
+                self._plant_id, trigger_type="manual"
+            )
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+
+
+class IGroReservoirEmergencyStopButton(IGroReservoirEntity, ButtonEntity):
+    """Emergency kill-switch button halting all pumps, valves & dosers."""
+
+    _attr_name = "Emergency Stop"
+    _attr_icon = "mdi:octagon-outline"
+
+    def __init__(self, coordinator: IGroCoordinator, reservoir_id: str) -> None:
+        super().__init__(coordinator, reservoir_id)
+        self._attr_unique_id = f"{DOMAIN}_res_{reservoir_id}_emergency_stop"
+
+    async def async_press(self) -> None:
+        res = self._reservoir
+        name = res["name"] if res else self._reservoir_id
+        await self.coordinator.fertigation.async_emergency_stop(
+            f"Emergency stop button pressed on {name}"
+        )
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -88,30 +125,43 @@ async def async_setup_entry(
     """Set up iGro button entities dynamically."""
     coordinator: IGroCoordinator = hass.data[DOMAIN]["coordinator"]
     tracked_plants: set[str] = set()
+    tracked_reservoirs: set[str] = set()
 
     @callback
     def _sync_entities() -> None:
         data = coordinator.data or {}
         current_plants = set(data.get("plants", {}).keys())
+        current_reservoirs = set(data.get("reservoirs", {}).keys())
 
         new_entities: list[ButtonEntity] = []
         for pid in current_plants - tracked_plants:
             new_entities.append(IGroQuickWaterButton(coordinator, pid))
             new_entities.append(IGroCapturePhotoButton(coordinator, pid))
+            new_entities.append(IGroManualPulseFeedButton(coordinator, pid))
             tracked_plants.add(pid)
+
+        for rid in current_reservoirs - tracked_reservoirs:
+            new_entities.append(IGroReservoirEmergencyStopButton(coordinator, rid))
+            tracked_reservoirs.add(rid)
 
         if new_entities:
             async_add_entities(new_entities)
 
-        removed = tracked_plants - current_plants
-        if removed:
+        removed_plants = tracked_plants - current_plants
+        removed_res = tracked_reservoirs - current_reservoirs
+        if removed_plants or removed_res:
             ent_reg = er.async_get(hass)
-            for pid in removed:
+            for pid in removed_plants:
                 tracked_plants.discard(pid)
-                for suffix in ("quick_water", "capture_photo"):
+                for suffix in ("quick_water", "capture_photo", "manual_feed_shot"):
                     uid = f"{DOMAIN}_plant_{pid}_{suffix}"
                     if ent_id := ent_reg.async_get_entity_id("button", DOMAIN, uid):
                         ent_reg.async_remove(ent_id)
+            for rid in removed_res:
+                tracked_reservoirs.discard(rid)
+                uid = f"{DOMAIN}_res_{rid}_emergency_stop"
+                if ent_id := ent_reg.async_get_entity_id("button", DOMAIN, uid):
+                    ent_reg.async_remove(ent_id)
 
     _sync_entities()
     entry.async_on_unload(

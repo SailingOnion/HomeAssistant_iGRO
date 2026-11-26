@@ -944,6 +944,36 @@ export const PANEL_STYLES = `
   border-bottom: none;
 }
 
+/* Bottle Level & Daily Volume Gauges */
+.gauge-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--igro-surface-2);
+  border: 1px solid var(--igro-border);
+  overflow: hidden;
+  margin-top: 6px;
+}
+
+.gauge-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--igro-accent);
+  transition: width 0.25s ease;
+}
+
+.gauge-fill.warn { background: #d97706; }
+.gauge-fill.danger { background: #ef4444; }
+
+.dosing-channel-row {
+  background: var(--igro-surface-2);
+  border: 1px solid var(--igro-border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 @media (max-width: 680px) {
   .container { padding: 14px; }
   .form-grid { grid-template-columns: 1fr; }

@@ -4,6 +4,8 @@
 
 import {
   BREEDING_GENERATIONS,
+  DOSING_ROLE_META,
+  FERTIGATION_MODE_META,
   LOG_TYPE_META,
   NUTRIENT_UNITS,
   PHENO_STATUS_META,
@@ -16,7 +18,7 @@ import {
   scaleNutrientsForVolume,
   stageBadgeHtml,
   toLocalDatetimeInput,
-} from "./api.js?v=0.6.0";
+} from "./api.js?v=0.7.0";
 
 function entityOptionsHtml(entities = [], selected = "", placeholder = "None") {
   const opts = [`<option value="">${escapeHtml(placeholder)}</option>`];
@@ -1659,6 +1661,472 @@ export function renderPhenoScoreModal({ hunt, score }, state) {
           <div class="modal-footer">
             <button type="button" class="btn" data-close-modal="1">Cancel</button>
             <button type="submit" class="btn btn-primary">${isEdit ? "Save Scorecard" : "Add to Pheno Hunt"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderReservoirModal(reservoir, state, haEntities) {
+  const isEdit = Boolean(reservoir?.id);
+  const allSensors = haEntities.sensors || [];
+  const allControls = haEntities.controls || [];
+  const allBinary = haEntities.binary_sensors || [];
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">${isEdit ? "✏️ Edit Reservoir" : "🛢 Add Nutrient Reservoir"}</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="reservoir-form">
+          <div class="modal-body">
+            <div class="form-grid">
+              <div class="form-field full">
+                <label class="form-label">Reservoir Name *</label>
+                <input class="input" name="name" required placeholder="e.g. Flower Res 60L" value="${escapeHtml(reservoir?.name || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Linked Environment (optional)</label>
+                <select class="select" name="environment_id">
+                  <option value="">Shared / Global</option>
+                  ${(state.environments || [])
+                    .map(
+                      (e) =>
+                        `<option value="${escapeHtml(e.id)}" ${reservoir?.environment_id === e.id ? "selected" : ""}>${escapeHtml(e.name)}</option>`
+                    )
+                    .join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Capacity (L)</label>
+                <input class="input" type="number" step="1" min="1" name="capacity_l" value="${reservoir?.capacity_l ?? 40}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Current Volume (L, optional)</label>
+                <input class="input" type="number" step="0.5" min="0" name="current_volume_l" placeholder="e.g. 35" value="${reservoir?.current_volume_l ?? ""}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Settle Delay Between Auto-Trims (s)</label>
+                <input class="input" type="number" step="10" min="30" name="settle_delay_s" value="${reservoir?.settle_delay_s ?? 180}" />
+              </div>
+
+              <div class="form-field full" style="margin-top:4px;font-weight:700;font-size:13px;">🔗 Live Sensors &amp; Safety Interlocks</div>
+              <div class="form-field">
+                <label class="form-label">pH Sensor</label>
+                <select class="select" name="ph_entity_id">${entityOptionsHtml(allSensors, reservoir?.ph_entity_id, "None")}</select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">EC Sensor</label>
+                <select class="select" name="ec_entity_id">${entityOptionsHtml(allSensors, reservoir?.ec_entity_id, "None")}</select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Water Temp Sensor</label>
+                <select class="select" name="water_temp_entity_id">${entityOptionsHtml(haEntities.temperature || allSensors, reservoir?.water_temp_entity_id, "None")}</select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Water Level Sensor (%)</label>
+                <select class="select" name="level_entity_id">${entityOptionsHtml(allSensors, reservoir?.level_entity_id, "None")}</select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Low-Level Float Interlock</label>
+                <select class="select" name="low_level_entity_id">${entityOptionsHtml(allBinary, reservoir?.low_level_entity_id, "None")}</select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Leak Detector Kill-Switch</label>
+                <select class="select" name="leak_entity_id">${entityOptionsHtml(allBinary, reservoir?.leak_entity_id, "None")}</select>
+              </div>
+
+              <div class="form-field full" style="margin-top:4px;font-weight:700;font-size:13px;">⚙️ Pumps &amp; Valves</div>
+              <div class="form-field">
+                <label class="form-label">Circulation / Mixing Pump</label>
+                <select class="select" name="circ_pump_entity_id">${entityOptionsHtml(allControls, reservoir?.circ_pump_entity_id, "None")}</select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">RO Top-Off Valve</label>
+                <select class="select" name="ro_fill_entity_id">${entityOptionsHtml(allControls, reservoir?.ro_fill_entity_id, "None")}</select>
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Shared Master Feed Pump (for solenoid-valve manifolds)</label>
+                <select class="select" name="master_feed_pump_entity_id">${entityOptionsHtml(allControls, reservoir?.master_feed_pump_entity_id, "None (Per-plant dedicated pumps)")}</select>
+              </div>
+
+              <div class="form-field full" style="margin-top:4px;font-weight:700;font-size:13px;">🎯 Target pH / EC &amp; Guardrails</div>
+              <div class="form-field">
+                <label class="form-label">Target pH</label>
+                <input class="input" type="number" step="0.05" min="3" max="9" name="target_ph" placeholder="e.g. 5.8" value="${reservoir?.target_ph ?? ""}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Target EC (mS/cm)</label>
+                <input class="input" type="number" step="0.05" min="0" max="5" name="target_ec" placeholder="e.g. 1.6" value="${reservoir?.target_ec ?? ""}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">pH Tolerance (±)</label>
+                <input class="input" type="number" step="0.05" min="0.05" name="ph_tolerance" value="${reservoir?.ph_tolerance ?? 0.15}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">EC Tolerance (±)</label>
+                <input class="input" type="number" step="0.05" min="0.05" name="ec_tolerance" value="${reservoir?.ec_tolerance ?? 0.1}" />
+              </div>
+              <div class="form-field full">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600;">
+                  <input type="checkbox" name="auto_trim_enabled" ${reservoir?.auto_trim_enabled ? "checked" : ""} />
+                  <span>🎯 Enable Closed-Loop Auto-pH &amp; Auto-EC Trimming</span>
+                </label>
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Notes</label>
+                <textarea class="textarea" name="notes" placeholder="Chiller temp, airstones, pump specs...">${escapeHtml(reservoir?.notes || "")}</textarea>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">${isEdit ? "Save Reservoir" : "Create Reservoir"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderDosingChannelModal({ reservoir, channel }, haEntities) {
+  const isEdit = Boolean(channel?.id);
+  const role = channel?.role || "base_a";
+  const ctrlType = channel?.control_type || "switch";
+  const allEntities = [...(haEntities.controls || []), ...(haEntities.numbers || [])];
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">${isEdit ? "✏️ Edit Dosing Channel" : "🧪 Add Peristaltic Dosing Channel"}</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="dosing-channel-form">
+          <div class="modal-body">
+            <div style="font-size:13px;color:var(--igro-text-muted);margin-bottom:4px;">Reservoir: <strong>${escapeHtml(reservoir.name)}</strong></div>
+            <div class="form-grid">
+              <div class="form-field">
+                <label class="form-label">Channel Name *</label>
+                <input class="input" name="name" required placeholder="e.g. Pump 1 — Silica" value="${escapeHtml(channel?.name || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Chemical Role</label>
+                <select class="select" name="role">
+                  ${Object.entries(DOSING_ROLE_META)
+                    .map(([k, v]) => `<option value="${k}" ${role === k ? "selected" : ""}>${v.icon} ${escapeHtml(v.label)}</option>`)
+                    .join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Preset Nutrient Match Name</label>
+                <input class="input" name="nutrient_name" placeholder="e.g. Silica, Cal-Mag, Grow A" value="${escapeHtml(channel?.nutrient_name || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Control Mode</label>
+                <select class="select" name="control_type">
+                  <option value="switch" ${ctrlType === "switch" ? "selected" : ""}>Timed Switch Relay (switch.*)</option>
+                  <option value="number_ml" ${ctrlType === "number_ml" ? "selected" : ""}>ESPHome mL Number (number.*)</option>
+                  <option value="esphome_service" ${ctrlType === "esphome_service" ? "selected" : ""}>ESPHome Custom Service</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">HA Relay / Number Entity</label>
+                <select class="select" name="entity_id">${entityOptionsHtml(allEntities, channel?.entity_id, "None (Dry-run / Virtual)")}</select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">ESPHome Service (optional)</label>
+                <input class="input" name="esphome_service" placeholder="e.g. esphome.doser_pump1" value="${escapeHtml(channel?.esphome_service || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Calibrated Flow Rate (mL/s)</label>
+                <input class="input" type="number" step="0.01" min="0.05" name="flow_rate_ml_s" value="${channel?.flow_rate_ml_s ?? 1.0}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Mix Sequence Order (lower first)</label>
+                <input class="input" type="number" step="1" min="1" max="100" name="mix_order" value="${channel?.mix_order ?? DOSING_ROLE_META[role]?.order ?? 60}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Stir Delay After Dose (s)</label>
+                <input class="input" type="number" step="5" min="0" max="600" name="stir_delay_s" value="${channel?.stir_delay_s ?? 30}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Bottle Capacity (mL)</label>
+                <input class="input" type="number" step="50" min="50" name="bottle_capacity_ml" value="${channel?.bottle_capacity_ml ?? 1000}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Remaining in Bottle (mL)</label>
+                <input class="input" type="number" step="10" min="0" name="bottle_remaining_ml" value="${channel?.bottle_remaining_ml ?? 1000}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Low-Bottle Alert (mL)</label>
+                <input class="input" type="number" step="10" min="0" name="low_bottle_alert_ml" value="${channel?.low_bottle_alert_ml ?? 100}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Max Dose / Cycle Safety Cap (mL)</label>
+                <input class="input" type="number" step="1" min="1" name="max_dose_per_cycle_ml" value="${channel?.max_dose_per_cycle_ml ?? 50}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Max Daily Safety Cap (mL)</label>
+                <input class="input" type="number" step="5" min="1" name="max_daily_dose_ml" value="${channel?.max_daily_dose_ml ?? 200}" />
+              </div>
+              <div class="form-field full">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600;">
+                  <input type="checkbox" name="enabled" ${channel?.enabled === false ? "" : "checked"} />
+                  <span>Channel Enabled</span>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">${isEdit ? "Save Channel" : "Add Channel"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderMixBatchModal(reservoir, state) {
+  const presets = state.nutrient_presets || [];
+  const defaultVol = reservoir.current_volume_l || reservoir.capacity_l || 20;
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" style="max-width:500px;" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">🧪 Ordered Batch Mix — ${escapeHtml(reservoir.name)}</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="mix-batch-form">
+          <div class="modal-body">
+            <p style="margin:0 0 8px;font-size:13px;color:var(--igro-text-muted);">
+              Select a saved Nutrient Preset and target water volume. iGro will dose channels strictly in mix-order (Silica → Cal-Mag → Base A → Base B → Additives) with stir delays and safety caps.
+            </p>
+            <div class="form-grid">
+              <div class="form-field full">
+                <label class="form-label">Nutrient Preset *</label>
+                <select class="select" name="preset_id" required>
+                  ${
+                    presets.length
+                      ? presets.map((pr) => `<option value="${escapeHtml(pr.id)}">🧪 ${escapeHtml(pr.name)}</option>`).join("")
+                      : `<option value="">No presets saved — create one under Journal → Nutrient Presets</option>`
+                  }
+                </select>
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Batch Volume (Liters) *</label>
+                <input class="input" type="number" step="0.5" min="1" max="1000" name="target_volume_l" required value="${defaultVol}" />
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary" ${presets.length ? "" : "disabled"}>🧪 Start Ordered Mix</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderCalibrateChannelModal(channel) {
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" style="max-width:480px;" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">🎯 Calibrate &amp; Dose — ${escapeHtml(channel.name)}</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="calibrate-channel-form">
+          <div class="modal-body">
+            <div class="log-chips" style="margin-top:0;margin-bottom:8px;">
+              <span class="log-chip">Current rate: <strong>${channel.flow_rate_ml_s} mL/s</strong></span>
+              <span class="log-chip">Bottle: <strong>${Math.round(channel.bottle_remaining_ml)} / ${Math.round(channel.bottle_capacity_ml)} mL</strong></span>
+            </div>
+
+            <div style="padding:10px 12px;border-radius:10px;background:var(--igro-surface-2);border:1px solid var(--igro-border);margin-bottom:10px;">
+              <div style="font-weight:700;font-size:13px;margin-bottom:6px;">💧 Quick Prime / Manual Dose</div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <input class="input" type="number" step="0.5" min="0.5" max="200" id="quick-dose-ml" value="5" style="width:90px;" />
+                <button type="button" class="btn btn-sm" id="btn-prime-channel">💧 Prime Line</button>
+                <button type="button" class="btn btn-sm btn-primary" id="btn-manual-dose-channel">🧪 Dose mL</button>
+              </div>
+            </div>
+
+            <div style="font-weight:700;font-size:13px;margin-bottom:4px;">📏 Flow Rate Calibration Wizard</div>
+            <p style="margin:0 0 8px;font-size:12px;color:var(--igro-text-muted);">
+              Run the pump into a graduated cylinder for a known duration (e.g. 10s), enter the measured mL below, and iGro computes &amp; saves the exact <code>mL/s</code>.
+            </p>
+            <div class="form-grid">
+              <div class="form-field">
+                <label class="form-label">Test Duration (seconds)</label>
+                <input class="input" type="number" step="1" min="1" name="test_seconds" value="10" required />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Measured Output (mL)</label>
+                <input class="input" type="number" step="0.1" min="0.1" name="measured_ml" placeholder="e.g. 12.5" required />
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Close</button>
+            <button type="submit" class="btn btn-primary">💾 Save Calibrated Rate</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderFertigationModal({ plant, schedule }, state, haEntities) {
+  const s = schedule || {};
+  const mode = s.mode || "off";
+  const schedType = s.schedule_type || "high_frequency";
+  const controls = haEntities.controls || [];
+  const binary = haEntities.binary_sensors || [];
+  const numbers = haEntities.numbers || [];
+  const fixedCsv = Array.isArray(s.fixed_times) ? s.fixed_times.join(", ") : "";
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">💧 Fertigation Schedule — ${escapeHtml(plant.name)}</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="fertigation-form">
+          <div class="modal-body">
+            <div class="form-grid">
+              <div class="form-field">
+                <label class="form-label">Fertigation Mode</label>
+                <select class="select" name="mode">
+                  ${Object.entries(FERTIGATION_MODE_META)
+                    .map(([k, v]) => `<option value="${k}" ${mode === k ? "selected" : ""}>${v.icon} ${escapeHtml(v.label)}</option>`)
+                    .join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Linked Reservoir</label>
+                <select class="select" name="reservoir_id">
+                  <option value="">None (Standalone)</option>
+                  ${(state.reservoirs || [])
+                    .map((r) => `<option value="${escapeHtml(r.id)}" ${s.reservoir_id === r.id ? "selected" : ""}>🛢 ${escapeHtml(r.name)}</option>`)
+                    .join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Schedule Mode</label>
+                <select class="select" name="schedule_type">
+                  <option value="high_frequency" ${schedType === "high_frequency" ? "selected" : ""}>High-Frequency (P1/P2/P3 Crop Steering)</option>
+                  <option value="interval" ${schedType === "interval" ? "selected" : ""}>Interval (Every N Hours)</option>
+                  <option value="fixed_times" ${schedType === "fixed_times" ? "selected" : ""}>Fixed Clock Times</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Auto-Journal Action</label>
+                <select class="select" name="auto_log_action">
+                  <option value="feed" ${(s.auto_log_action || "feed") === "feed" ? "selected" : ""}>🧪 Feed</option>
+                  <option value="water" ${s.auto_log_action === "water" ? "selected" : ""}>💧 Water</option>
+                </select>
+              </div>
+
+              <div class="form-field full" style="margin-top:4px;font-weight:700;font-size:13px;">⚙️ Pump, Solenoid Valve &amp; ESPHome Watchdog</div>
+              <div class="form-field">
+                <label class="form-label">Plant Pump Relay (switch.*)</label>
+                <select class="select" name="pump_entity_id">${entityOptionsHtml(controls, s.pump_entity_id, "None (Virtual / Shared)")}</select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Plant Solenoid Valve (optional)</label>
+                <select class="select" name="valve_entity_id">${entityOptionsHtml(controls, s.valve_entity_id, "None")}</select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">ESPHome Max-On Watchdog (number.*)</label>
+                <select class="select" name="esphome_watchdog_entity_id">${entityOptionsHtml(numbers, s.esphome_watchdog_entity_id, "None")}</select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Leak Detector Override</label>
+                <select class="select" name="leak_entity_id">${entityOptionsHtml(binary, s.leak_entity_id, "Inherit from Reservoir")}</select>
+              </div>
+              <div class="form-field full">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600;">
+                  <input type="checkbox" name="use_shared_pump" ${s.use_shared_pump ? "checked" : ""} />
+                  <span>Use Reservoir Master Feed Pump (opens valve 0.5s before pump ON, closes 0.5s after pump OFF)</span>
+                </label>
+              </div>
+
+              <div class="form-field full" style="margin-top:4px;font-weight:700;font-size:13px;">⏱ Dosing, Crop Steering (P1/P2/P3) &amp; Moisture Trigger</div>
+              <div class="form-field">
+                <label class="form-label">Calibrated Flow Rate (mL/s)</label>
+                <input class="input" type="number" step="0.5" min="0.1" name="flow_rate_ml_s" value="${s.flow_rate_ml_s ?? 10}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Feeds Per Day (1–24)</label>
+                <input class="input" type="number" step="1" min="1" max="24" name="feeds_per_day" value="${s.feeds_per_day ?? 4}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Shot Duration (seconds)</label>
+                <input class="input" type="number" step="1" min="1" max="300" name="shot_duration_s" value="${s.shot_duration_s ?? 15}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Target Shot Volume (mL, optional)</label>
+                <input class="input" type="number" step="10" min="0" name="target_shot_ml" placeholder="Overrides duration" value="${s.target_shot_ml ?? ""}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Active Window Start (Lights-On)</label>
+                <input class="input" type="time" name="window_start" value="${escapeHtml(s.window_start || "08:00")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Active Window End (Lights-Off)</label>
+                <input class="input" type="time" name="window_end" value="${escapeHtml(s.window_end || "20:00")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">P1 Ramp Shots</label>
+                <input class="input" type="number" step="1" min="0" max="12" name="p1_ramp_shots" value="${s.p1_ramp_shots ?? 2}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">P1 Ramp Spacing (min)</label>
+                <input class="input" type="number" step="5" min="5" max="180" name="p1_interval_min" value="${s.p1_interval_min ?? 30}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">P3 Dryback Cutoff Before Lights-Off (min)</label>
+                <input class="input" type="number" step="15" min="0" max="480" name="p3_dryback_cutoff_min" value="${s.p3_dryback_cutoff_min ?? 120}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Interval Hours (Interval Mode)</label>
+                <input class="input" type="number" step="0.5" min="0.5" name="interval_hours" value="${s.interval_hours ?? 6}" />
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Fixed Times (HH:MM comma-separated, Fixed Mode)</label>
+                <input class="input" name="fixed_times" placeholder="e.g. 08:30, 12:00, 16:00" value="${escapeHtml(fixedCsv)}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Moisture Trigger Threshold (%)</label>
+                <input class="input" type="number" step="1" min="1" max="100" name="moisture_threshold_pct" value="${s.moisture_threshold_pct ?? 35}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Moisture Trigger Cooldown (min)</label>
+                <input class="input" type="number" step="5" min="5" name="moisture_cooldown_min" value="${s.moisture_cooldown_min ?? 90}" />
+              </div>
+
+              <div class="form-field full" style="margin-top:4px;font-weight:700;font-size:13px;">🛡 Flood &amp; Hardware Safety Caps</div>
+              <div class="form-field">
+                <label class="form-label">Max Single-Shot Duration Cap (s)</label>
+                <input class="input" type="number" step="5" min="5" max="600" name="max_shot_duration_s" value="${s.max_shot_duration_s ?? 60}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Max Daily Total Volume Cap (mL)</label>
+                <input class="input" type="number" step="100" min="100" name="max_daily_volume_ml" value="${s.max_daily_volume_ml ?? 4000}" />
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save Fertigation Schedule</button>
           </div>
         </form>
       </div>

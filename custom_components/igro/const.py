@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "igro"
-PLATFORMS = ["sensor", "binary_sensor", "select", "button", "calendar", "todo"]
+PLATFORMS = ["sensor", "binary_sensor", "select", "number", "button", "calendar", "todo"]
 
 # Configuration keys
 CONF_DB_PATH = "db_path"
@@ -162,6 +162,30 @@ POLLEN_VIABILITIES: list[str] = ["high", "medium", "low", "depleted"]
 
 PHENO_STATUSES: list[str] = ["evaluating", "keeper", "breeder", "cull"]
 
+# Fertigation & Reservoir Dosing enumerations
+FERTIGATION_MODES: list[str] = ["off", "scheduled", "moisture_triggered"]
+FERTIGATION_SCHEDULE_TYPES: list[str] = ["high_frequency", "interval", "fixed_times"]
+DOSING_CHANNEL_ROLES: list[str] = [
+    "silica",
+    "cal_mag",
+    "base_a",
+    "base_b",
+    "bloom_pk",
+    "additive",
+    "ph_down",
+    "ph_up",
+]
+DOSING_ROLE_DEFAULT_ORDER: dict[str, int] = {
+    "silica": 10,
+    "cal_mag": 20,
+    "base_a": 30,
+    "base_b": 40,
+    "bloom_pk": 50,
+    "additive": 60,
+    "ph_down": 90,
+    "ph_up": 95,
+}
+
 # VPD status values
 VPD_STATUS_OPTIMAL = "optimal"
 VPD_STATUS_LOW = "low"
@@ -174,6 +198,10 @@ EVENT_STAGE_CHANGED = f"{DOMAIN}_stage_changed"
 EVENT_PHOTO_ADDED = f"{DOMAIN}_photo_added"
 EVENT_HARVEST_RECORDED = f"{DOMAIN}_harvest_recorded"
 EVENT_REMINDER_DUE = f"{DOMAIN}_reminder_due"
+EVENT_FERTIGATION_SHOT = f"{DOMAIN}_fertigation_shot"
+EVENT_FERTIGATION_EMERGENCY_STOP = f"{DOMAIN}_fertigation_emergency_stop"
+EVENT_DOSING_RUN_COMPLETED = f"{DOMAIN}_dosing_run_completed"
+EVENT_DOSING_SAFETY_ABORT = f"{DOMAIN}_dosing_safety_abort"
 
 # Services
 SERVICE_LOG_ACTION = "log_action"
@@ -184,6 +212,10 @@ SERVICE_CREATE_PLANT = "create_plant"
 SERVICE_RECORD_HARVEST = "record_harvest"
 SERVICE_CREATE_REMINDER = "create_reminder"
 SERVICE_COMPLETE_REMINDER = "complete_reminder"
+SERVICE_FERTIGATE_PLANT = "fertigate_plant"
+SERVICE_MIX_RESERVOIR_BATCH = "mix_reservoir_batch"
+SERVICE_DOSE_CHANNEL = "dose_channel"
+SERVICE_EMERGENCY_STOP = "emergency_stop"
 
 # Allowed photo MIME types / extensions
 ALLOWED_IMAGE_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
