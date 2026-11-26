@@ -3,8 +3,11 @@
  */
 
 import {
+  BREEDING_GENERATIONS,
   LOG_TYPE_META,
   NUTRIENT_UNITS,
+  PHENO_STATUS_META,
+  POLLEN_DONOR_META,
   REMINDER_ACTION_META,
   STAGE_META,
   TRAINING_METHODS,
@@ -13,7 +16,7 @@ import {
   scaleNutrientsForVolume,
   stageBadgeHtml,
   toLocalDatetimeInput,
-} from "./api.js?v=0.5.0";
+} from "./api.js?v=0.6.0";
 
 function entityOptionsHtml(entities = [], selected = "", placeholder = "None") {
   const opts = [`<option value="">${escapeHtml(placeholder)}</option>`];
@@ -297,7 +300,7 @@ export function renderLogModal(defaults, state) {
   const selectedPlantId =
     defaults.plant_id !== undefined ? defaults.plant_id || "" : state.plants?.[0]?.id ?? "";
   const selectedPlant = (state.plants || []).find((p) => p.id === selectedPlantId);
-  const selectableTypes = ["water", "feed", "training", "defoliation", "measurement", "transplant", "flush", "pest_issue", "note"];
+  const selectableTypes = ["water", "feed", "training", "defoliation", "measurement", "transplant", "flush", "pest_issue", "pollination", "reversal", "note"];
   const showWaterFields = ["water", "feed", "flush"].includes(selectedType);
   const showFeedFields = selectedType === "feed";
   const showTrainingFields = selectedType === "training";
@@ -1102,6 +1105,560 @@ export function renderReminderModal(reminder, state) {
           <div class="modal-footer">
             <button type="button" class="btn" data-close-modal="1">Cancel</button>
             <button type="submit" class="btn btn-primary">${isEdit ? "Save Reminder" : "Create Reminder"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderPollenModal(batch, state) {
+  const isEdit = Boolean(batch?.id);
+  const collected = (batch?.collected_at || new Date().toISOString()).slice(0, 10);
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">${isEdit ? "✏️ Edit Pollen Batch" : "🌼 Store Pollen Batch"}</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="pollen-form">
+          <div class="modal-body">
+            <div class="form-grid">
+              <div class="form-field full">
+                <label class="form-label">Batch Name *</label>
+                <input class="input" name="name" required placeholder="e.g. Northern Lights #3 Reversed Pollen" value="${escapeHtml(batch?.name || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Donor Plant (optional)</label>
+                <select class="select" name="donor_plant_id">
+                  <option value="">External / Unlisted</option>
+                  ${(state.plants || [])
+                    .map(
+                      (p) =>
+                        `<option value="${escapeHtml(p.id)}" ${batch?.donor_plant_id === p.id ? "selected" : ""}>${escapeHtml(p.name)}${p.strain ? ` (${escapeHtml(p.strain)})` : ""}</option>`
+                    )
+                    .join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Donor Strain / Cultivar</label>
+                <input class="input" name="donor_strain" placeholder="Auto from plant or enter name" value="${escapeHtml(batch?.donor_strain || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Donor Type</label>
+                <select class="select" name="donor_type">
+                  ${Object.entries(POLLEN_DONOR_META)
+                    .map(
+                      ([k, v]) =>
+                        `<option value="${k}" ${(batch?.donor_type || "male") === k ? "selected" : ""}>${v.icon} ${escapeHtml(v.label)}</option>`
+                    )
+                    .join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Collection Date</label>
+                <input class="input" type="date" name="collected_at" value="${escapeHtml(collected)}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Storage Method</label>
+                <input class="input" name="storage_method" placeholder="e.g. Freezer vial + flour & silica" value="${escapeHtml(batch?.storage_method || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Storage Location</label>
+                <input class="input" name="storage_location" placeholder="e.g. Deep Freezer Box A-2" value="${escapeHtml(batch?.storage_location || "")}" />
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Viability</label>
+                <select class="select" name="viability">
+                  ${["high", "medium", "low", "depleted"]
+                    .map(
+                      (v) =>
+                        `<option value="${v}" ${(batch?.viability || "high") === v ? "selected" : ""}>${v.toUpperCase()}</option>`
+                    )
+                    .join("")}
+                </select>
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Notes</label>
+                <textarea class="textarea" name="notes" placeholder="Drying protocol, STS spray schedule, thaw count...">${escapeHtml(batch?.notes || "")}</textarea>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">${isEdit ? "Save Pollen Batch" : "Store Pollen"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderCrossModal(cross, state) {
+  const isEdit = Boolean(cross?.id);
+  const pollDate = (cross?.pollination_date || new Date().toISOString()).slice(0, 10);
+  const expMat = cross?.expected_maturity_date ? cross.expected_maturity_date.slice(0, 10) : "";
+  const gens = state.meta?.breeding_generations || BREEDING_GENERATIONS;
+  const plants = state.plants || [];
+  const otherCrosses = (state.breeding_crosses || []).filter((c) => c.id !== cross?.id);
+  const pollenBatches = state.pollen_batches || [];
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">${isEdit ? "✏️ Edit Breeding Cross" : "🧬 New Breeding Cross / Pollination"}</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="cross-form">
+          <div class="modal-body">
+            <div class="form-grid">
+              <div class="form-field full">
+                <label class="form-label">Cross / Project Name *</label>
+                <input class="input" name="name" required placeholder="e.g. Northern Haze F1" value="${escapeHtml(cross?.name || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Generation</label>
+                <select class="select" name="generation">
+                  ${gens.map((g) => `<option value="${g}" ${(cross?.generation || "F1") === g ? "selected" : ""}>${g}</option>`).join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Status</label>
+                <select class="select" name="status">
+                  ${["planned", "pollinated", "maturing", "harvested", "failed"]
+                    .map((s) => `<option value="${s}" ${(cross?.status || "pollinated") === s ? "selected" : ""}>${s}</option>`)
+                    .join("")}
+                </select>
+              </div>
+
+              <div class="form-field full" style="margin-top:4px;font-weight:700;font-size:13px;">♀️ Seed Parent (Mother)</div>
+              <div class="form-field">
+                <label class="form-label">Mother Plant</label>
+                <select class="select" name="mother_plant_id">
+                  <option value="">None / External</option>
+                  ${plants.map((p) => `<option value="${escapeHtml(p.id)}" ${cross?.mother_plant_id === p.id ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Mother Pedigree Cross (for multi-gen tree)</label>
+                <select class="select" name="mother_cross_id">
+                  <option value="">None (P1 / Foundation)</option>
+                  ${otherCrosses.map((c) => `<option value="${escapeHtml(c.id)}" ${cross?.mother_cross_id === c.id ? "selected" : ""}>${escapeHtml(c.name)} (${escapeHtml(c.generation)})</option>`).join("")}
+                </select>
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Mother Strain / Fallback Name</label>
+                <input class="input" name="mother_name" placeholder="Optional if plant or parent cross selected" value="${escapeHtml(cross?.mother_name || "")}" />
+              </div>
+
+              <div class="form-field full" style="margin-top:4px;font-weight:700;font-size:13px;">♂️ Pollen Donor (Father / Reversed)</div>
+              <div class="form-field">
+                <label class="form-label">Pollen Vault Batch</label>
+                <select class="select" name="pollen_batch_id">
+                  <option value="">None (Live plant / External)</option>
+                  ${pollenBatches.map((pb) => `<option value="${escapeHtml(pb.id)}" ${cross?.pollen_batch_id === pb.id ? "selected" : ""}>🌼 ${escapeHtml(pb.name)}</option>`).join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Donor Plant</label>
+                <select class="select" name="father_plant_id">
+                  <option value="">None / External</option>
+                  ${plants.map((p) => `<option value="${escapeHtml(p.id)}" ${cross?.father_plant_id === p.id ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Donor Pedigree Cross (multi-gen)</label>
+                <select class="select" name="father_cross_id">
+                  <option value="">None (P1 / Foundation)</option>
+                  ${otherCrosses.map((c) => `<option value="${escapeHtml(c.id)}" ${cross?.father_cross_id === c.id ? "selected" : ""}>${escapeHtml(c.name)} (${escapeHtml(c.generation)})</option>`).join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Donor Strain / Fallback Name</label>
+                <input class="input" name="father_name" placeholder="Optional if batch/plant selected" value="${escapeHtml(cross?.father_name || "")}" />
+              </div>
+
+              <div class="form-field full" style="margin-top:4px;font-weight:700;font-size:13px;">🌼 Pollination Details</div>
+              <div class="form-field">
+                <label class="form-label">Pollination Date</label>
+                <input class="input" type="date" name="pollination_date" value="${escapeHtml(pollDate)}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Expected Seed Maturity (blank = +6 wks)</label>
+                <input class="input" type="date" name="expected_maturity_date" value="${escapeHtml(expMat)}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Pollination Scope</label>
+                <select class="select" name="pollination_scope">
+                  <option value="branch" ${(cross?.pollination_scope || "branch") === "branch" ? "selected" : ""}>Tagged Branch</option>
+                  <option value="whole_plant" ${cross?.pollination_scope === "whole_plant" ? "selected" : ""}>Whole Plant</option>
+                  <option value="open_pollination" ${cross?.pollination_scope === "open_pollination" ? "selected" : ""}>Open Pollination</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Branch Tag / Marker</label>
+                <input class="input" name="branch_tag" placeholder="e.g. Lower-left yellow tag" value="${escapeHtml(cross?.branch_tag || "")}" />
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Breeding Goals</label>
+                <input class="input" name="goals" placeholder="e.g. Lock in blueberry terps + faster 8-wk finish" value="${escapeHtml(cross?.goals || "")}" />
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Notes</label>
+                <textarea class="textarea" name="notes" placeholder="Pollination technique, isolation steps, observations...">${escapeHtml(cross?.notes || "")}</textarea>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">${isEdit ? "Save Cross" : "Create Cross"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderHarvestSeedsModal(cross) {
+  const today = new Date().toISOString().slice(0, 10);
+  const defaultType = cross?.generation === "S1" ? "feminized" : "regular";
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" style="max-width:480px;" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">🌰 Harvest Seeds & Mint to Seedbank</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="harvest-seeds-form">
+          <div class="modal-body">
+            <div style="font-size:14px;font-weight:700;">🧬 ${escapeHtml(cross.name)} (${escapeHtml(cross.generation)})</div>
+            <div style="font-size:12px;color:var(--igro-text-muted);margin-bottom:8px;">
+              ♀️ ${escapeHtml(cross.mother_display)} × ♂️ ${escapeHtml(cross.father_display)}
+            </div>
+            <div class="form-grid">
+              <div class="form-field">
+                <label class="form-label">Harvest Date</label>
+                <input class="input" type="date" name="harvested_at" value="${escapeHtml(cross.seed_harvested_at || today)}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Mature Seed Count *</label>
+                <input class="input" type="number" min="0" step="1" name="seed_count" required placeholder="e.g. 120" value="${cross.seed_count ?? ""}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Seed Batch Name</label>
+                <input class="input" name="batch_name" value="${escapeHtml(cross.name)}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Seed Type</label>
+                <select class="select" name="seed_type">
+                  <option value="feminized" ${defaultType === "feminized" ? "selected" : ""}>Feminized</option>
+                  <option value="regular" ${defaultType === "regular" ? "selected" : ""}>Regular</option>
+                  <option value="autoflower">Autoflower</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Breeder Label</label>
+                <input class="input" name="breeder" placeholder="Homebred (iGro)" value="Homebred (iGro)" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Storage Location</label>
+                <input class="input" name="storage_location" placeholder="e.g. Seed Fridge Vial #4" />
+              </div>
+              <div class="form-field full">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600;">
+                  <input type="checkbox" name="mint_seedbank" checked />
+                  <span>🌰 Auto-mint new Seedbank batch with full pedigree lineage</span>
+                </label>
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Seed Quality / Harvest Notes</label>
+                <textarea class="textarea" name="notes" placeholder="Tiger striping, germination test results, drying cure..."></textarea>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">🌰 Harvest & Mint Seeds</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function renderPedigreeNodeHtml(node, role = null) {
+  if (!node) return "";
+  const icon =
+    node.node_type === "cross"
+      ? "🧬"
+      : node.node_type === "pollen"
+      ? "🌼"
+      : node.node_type === "plant"
+      ? "🪴"
+      : "🌱";
+  const roleTag =
+    role === "mother"
+      ? `<span class="pedigree-role mother">♀️ Mother</span>`
+      : role === "father"
+      ? `<span class="pedigree-role father">♂️ Donor</span>`
+      : `<span class="pedigree-role root">🧬 Target Cross</span>`;
+  const hasParents = Boolean(node.mother || node.father);
+
+  return `
+    <div class="pedigree-branch">
+      <div class="pedigree-node ${node.node_type || ""}">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px;">
+          ${roleTag}
+          ${node.generation ? `<span class="badge badge-info">${escapeHtml(node.generation)}</span>` : ""}
+        </div>
+        <div style="font-weight:700;font-size:13px;">${icon} ${escapeHtml(node.name)}</div>
+        ${node.plant_name ? `<div style="font-size:11px;color:var(--igro-text-muted);">Plant: ${escapeHtml(node.plant_name)}</div>` : ""}
+        ${node.strain && node.strain !== node.name ? `<div style="font-size:11px;color:var(--igro-text-muted);">${escapeHtml(node.strain)}</div>` : ""}
+      </div>
+      ${
+        hasParents
+          ? `<div class="pedigree-parents">
+              ${node.mother ? renderPedigreeNodeHtml(node.mother, "mother") : ""}
+              ${node.father ? renderPedigreeNodeHtml(node.father, "father") : ""}
+            </div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+export function renderPedigreeModal(cross) {
+  const tree = cross.pedigree_tree;
+  const descendants = cross.descendants || [];
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" style="max-width:860px;" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">🌳 Pedigree Tree — ${escapeHtml(cross.name)} (${escapeHtml(cross.generation)})</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <div class="modal-body">
+          <div style="font-size:12px;color:var(--igro-text-muted);margin-bottom:8px;">
+            Multi-generation ancestry (left → right traces back to parents &amp; grandparents).
+          </div>
+          <div class="pedigree-scroll">
+            ${tree ? renderPedigreeNodeHtml(tree, null) : `<p>No pedigree lineage linked yet.</p>`}
+          </div>
+          ${
+            descendants.length
+              ? `
+            <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--igro-border);">
+              <div style="font-weight:700;font-size:13px;margin-bottom:8px;">⬇️ Descendant Crosses (${descendants.length})</div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;">
+                ${descendants
+                  .map(
+                    (d) =>
+                      `<button type="button" class="btn btn-sm" data-view-pedigree="${escapeHtml(d.id)}">🧬 ${escapeHtml(d.name)} (${escapeHtml(d.generation || "")})</button>`
+                  )
+                  .join("")}
+              </div>
+            </div>
+          `
+              : ""
+          }
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-primary" data-close-modal="1">Close</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+export function renderPhenoHuntModal(hunt, state) {
+  const isEdit = Boolean(hunt?.id);
+  const startDate = (hunt?.started_at || new Date().toISOString()).slice(0, 10);
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" style="max-width:520px;" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">${isEdit ? "✏️ Edit Pheno Hunt" : "🔍 New Pheno Hunt"}</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="pheno-hunt-form">
+          <div class="modal-body">
+            <div class="form-grid">
+              <div class="form-field full">
+                <label class="form-label">Pheno Hunt Name *</label>
+                <input class="input" name="name" required placeholder="e.g. Northern Haze F1 — 6-Pack Hunt" value="${escapeHtml(hunt?.name || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Linked Cross (optional)</label>
+                <select class="select" name="breeding_cross_id">
+                  <option value="">None (Commercial pack)</option>
+                  ${(state.breeding_crosses || [])
+                    .map(
+                      (c) =>
+                        `<option value="${escapeHtml(c.id)}" ${hunt?.breeding_cross_id === c.id ? "selected" : ""}>🧬 ${escapeHtml(c.name)} (${escapeHtml(c.generation)})</option>`
+                    )
+                    .join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Seed Batch (optional)</label>
+                <select class="select" name="seed_batch_id">
+                  <option value="">None</option>
+                  ${(state.seed_batches || [])
+                    .map(
+                      (sb) =>
+                        `<option value="${escapeHtml(sb.id)}" ${hunt?.seed_batch_id === sb.id ? "selected" : ""}>🌰 ${escapeHtml(sb.name)} (${sb.seed_count} seeds)</option>`
+                    )
+                    .join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Strain</label>
+                <input class="input" name="strain" placeholder="e.g. Northern Haze F1" value="${escapeHtml(hunt?.strain || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Breeder</label>
+                <input class="input" name="breeder" placeholder="e.g. Homebred / Sensi" value="${escapeHtml(hunt?.breeder || "")}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Start Date</label>
+                <input class="input" type="date" name="started_at" value="${escapeHtml(startDate)}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Status</label>
+                <select class="select" name="status">
+                  <option value="active" ${(hunt?.status || "active") === "active" ? "selected" : ""}>Active</option>
+                  <option value="completed" ${hunt?.status === "completed" ? "selected" : ""}>Completed</option>
+                  <option value="archived" ${hunt?.status === "archived" ? "selected" : ""}>Archived</option>
+                </select>
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Selection Goals</label>
+                <input class="input" name="selection_goals" placeholder="e.g. Heavy resin, <2x stretch, citrus gas terps" value="${escapeHtml(hunt?.selection_goals || "")}" />
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Notes</label>
+                <textarea class="textarea" name="notes" placeholder="Germination rates, environment notes...">${escapeHtml(hunt?.notes || "")}</textarea>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">${isEdit ? "Save Hunt" : "Create Pheno Hunt"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderPhenoScoreModal({ hunt, score }, state) {
+  const isEdit = Boolean(score?.id);
+  const existingPlantIds = new Set((hunt.scores || []).map((s) => s.plant_id));
+  const plants = (state.plants || []).filter(
+    (p) => isEdit ? p.id === score.plant_id : !existingPlantIds.has(p.id)
+  );
+  const ratingSelect = (name, val) => `
+    <select class="select" name="${name}">
+      <option value="">—</option>
+      ${[5, 4, 3, 2, 1].map((n) => `<option value="${n}" ${Number(val) === n ? "selected" : ""}>${"★".repeat(n)} (${n}/5)</option>`).join("")}
+    </select>
+  `;
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">${isEdit ? `✏️ Score ${escapeHtml(score.plant_name)}` : "🔍 Add & Score Sibling Phenotype"}</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="pheno-score-form">
+          <div class="modal-body">
+            <div style="font-size:13px;color:var(--igro-text-muted);margin-bottom:4px;">Pheno Hunt: <strong>${escapeHtml(hunt.name)}</strong></div>
+            <div class="form-grid">
+              <div class="form-field">
+                <label class="form-label">Plant *</label>
+                <select class="select" name="plant_id" required ${isEdit ? "disabled" : ""}>
+                  ${
+                    isEdit
+                      ? `<option value="${escapeHtml(score.plant_id)}" selected>${escapeHtml(score.plant_name)}</option>`
+                      : plants.length
+                      ? plants.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("")
+                      : `<option value="">No available plants</option>`
+                  }
+                </select>
+                ${isEdit ? `<input type="hidden" name="plant_id" value="${escapeHtml(score.plant_id)}" />` : ""}
+              </div>
+              <div class="form-field">
+                <label class="form-label">Pheno Code</label>
+                <input class="input" name="pheno_code" placeholder="e.g. #1, #2, A" value="${escapeHtml(score?.pheno_code || "")}" />
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Selection Status</label>
+                <select class="select" name="status">
+                  ${Object.entries(PHENO_STATUS_META)
+                    .map(
+                      ([k, v]) =>
+                        `<option value="${k}" ${(score?.status || "evaluating") === k ? "selected" : ""}>${v.icon} ${escapeHtml(v.label)}</option>`
+                    )
+                    .join("")}
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Vigor (1–5)</label>
+                ${ratingSelect("vigor", score?.vigor)}
+              </div>
+              <div class="form-field">
+                <label class="form-label">Resin / Trichomes (1–5)</label>
+                ${ratingSelect("resin_density", score?.resin_density)}
+              </div>
+              <div class="form-field">
+                <label class="form-label">Pest & Mold Resistance (1–5)</label>
+                ${ratingSelect("pest_mold_resistance", score?.pest_mold_resistance)}
+              </div>
+              <div class="form-field">
+                <label class="form-label">Aroma / Terps (1–5)</label>
+                ${ratingSelect("aroma_score", score?.aroma_score)}
+              </div>
+              <div class="form-field">
+                <label class="form-label">Stretch Factor (e.g. 2.0x)</label>
+                <input class="input" type="number" step="0.1" min="0.5" max="10" name="stretch_factor" placeholder="e.g. 1.8" value="${score?.stretch_factor ?? ""}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Internode Spacing</label>
+                <select class="select" name="internode_spacing">
+                  <option value="">—</option>
+                  <option value="tight" ${score?.internode_spacing === "tight" ? "selected" : ""}>Tight</option>
+                  <option value="medium" ${score?.internode_spacing === "medium" ? "selected" : ""}>Medium</option>
+                  <option value="lanky" ${score?.internode_spacing === "lanky" ? "selected" : ""}>Lanky / Stretchy</option>
+                </select>
+              </div>
+              <div class="form-field">
+                <label class="form-label">Flowering Time (days)</label>
+                <input class="input" type="number" step="1" min="20" max="200" name="flower_days" placeholder="e.g. 63" value="${score?.flower_days ?? ""}" />
+              </div>
+              <div class="form-field">
+                <label class="form-label">Dry Yield (g, blank = from harvest)</label>
+                <input class="input" type="number" step="0.1" min="0" name="yield_g" placeholder="Auto from harvest" value="${score?.yield_g ?? ""}" />
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Terpene / Aroma Notes</label>
+                <input class="input" name="terpene_notes" placeholder="e.g. Blueberry muffin, fuel, pine" value="${escapeHtml(score?.terpene_notes || "")}" />
+              </div>
+              <div class="form-field full">
+                <label class="form-label">Pheno Notes</label>
+                <textarea class="textarea" name="notes" placeholder="Structure, bud density, clone rooting speed, herm check...">${escapeHtml(score?.notes || "")}</textarea>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">${isEdit ? "Save Scorecard" : "Add to Pheno Hunt"}</button>
           </div>
         </form>
       </div>

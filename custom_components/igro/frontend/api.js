@@ -22,9 +22,29 @@ export const LOG_TYPE_META = {
   transplant:   { label: "Transplant",   icon: "🪴", color: "#a16207" },
   flush:        { label: "Flush",        icon: "🚿", color: "#06b6d4" },
   pest_issue:   { label: "Pest / Issue", icon: "🪲", color: "#ef4444" },
+  pollination:  { label: "Pollination",  icon: "🌼", color: "#eab308" },
+  reversal:     { label: "Reversal (STS/CS)", icon: "⚗️", color: "#ec4899" },
   stage_change: { label: "Stage Change", icon: "🔄", color: "#a855f7" },
   note:         { label: "Note",         icon: "📝", color: "#64748b" },
 };
+
+export const POLLEN_DONOR_META = {
+  male:         { label: "Male Donor",       icon: "♂️", cls: "badge-info" },
+  reversed_sts: { label: "Reversed (STS)",   icon: "⚗️", cls: "badge-warn" },
+  reversed_cs:  { label: "Reversed (CS)",    icon: "⚗️", cls: "badge-warn" },
+  other:        { label: "Other",            icon: "🌼", cls: "badge-muted" },
+};
+
+export const PHENO_STATUS_META = {
+  evaluating: { label: "Evaluating", icon: "🔍", cls: "badge-info" },
+  keeper:     { label: "Keeper",     icon: "🏆", cls: "badge-ok" },
+  breeder:    { label: "Breeder",    icon: "🧬", cls: "badge-warn" },
+  cull:       { label: "Cull",       icon: "❌", cls: "badge-danger" },
+};
+
+export const BREEDING_GENERATIONS = [
+  "F1", "F2", "F3", "F4", "S1", "BX1", "BX2", "IX", "Polyhybrid", "Landrace", "Other",
+];
 
 export const REMINDER_ACTION_META = {
   water:        { label: "Water",        icon: "💧", color: "#0ea5e9" },
@@ -394,6 +414,63 @@ export class IGroApi {
 
   async deleteReminder(reminder_id) {
     return this.hass.callWS({ type: "igro/reminders/delete", reminder_id });
+  }
+
+  async createPollenBatch(data) {
+    return this.hass.callWS({ type: "igro/pollen/create", data });
+  }
+
+  async updatePollenBatch(batch_id, data) {
+    return this.hass.callWS({ type: "igro/pollen/update", batch_id, data });
+  }
+
+  async deletePollenBatch(batch_id) {
+    return this.hass.callWS({ type: "igro/pollen/delete", batch_id });
+  }
+
+  async createBreedingCross(data) {
+    return this.hass.callWS({ type: "igro/crosses/create", data });
+  }
+
+  async updateBreedingCross(cross_id, data) {
+    return this.hass.callWS({ type: "igro/crosses/update", cross_id, data });
+  }
+
+  async harvestCrossSeeds(cross_id, data) {
+    return this.hass.callWS({ type: "igro/crosses/harvest_seeds", cross_id, data });
+  }
+
+  async deleteBreedingCross(cross_id) {
+    return this.hass.callWS({ type: "igro/crosses/delete", cross_id });
+  }
+
+  async deleteSeedBatch(batch_id) {
+    return this.hass.callWS({ type: "igro/seed_batches/delete", batch_id });
+  }
+
+  async createPhenoHunt(data) {
+    return this.hass.callWS({ type: "igro/pheno_hunts/create", data });
+  }
+
+  async updatePhenoHunt(hunt_id, data) {
+    return this.hass.callWS({ type: "igro/pheno_hunts/update", hunt_id, data });
+  }
+
+  async deletePhenoHunt(hunt_id) {
+    return this.hass.callWS({ type: "igro/pheno_hunts/delete", hunt_id });
+  }
+
+  async upsertPhenoScore(pheno_hunt_id, plant_id, data) {
+    return this.hass.callWS({
+      type: "igro/pheno_scores/upsert",
+      pheno_hunt_id,
+      plant_id,
+      data,
+    });
+  }
+
+  async deletePhenoScore(score_id) {
+    return this.hass.callWS({ type: "igro/pheno_scores/delete", score_id });
   }
 
   async uploadPhoto(formData) {

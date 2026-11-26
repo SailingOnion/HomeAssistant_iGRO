@@ -17,7 +17,11 @@ import sqlite3
 from typing import Any
 import uuid
 
-from .calculations import is_timestamp_in_future, parse_iso_datetime
+from .calculations import (
+    calculate_seed_maturity_date,
+    is_timestamp_in_future,
+    parse_iso_datetime,
+)
 from .const import (
     DEFAULT_LEAF_TEMP_OFFSET_C,
     GROW_STAGES,
@@ -26,7 +30,7 @@ from .const import (
     STAGE_GERMINATION,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def utc_now_iso() -> str:
@@ -304,6 +308,109 @@ class IGroDatabase:
                     FOREIGN KEY (preset_id) REFERENCES nutrient_presets(id) ON DELETE SET NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS pollen_batches (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    donor_plant_id TEXT,
+                    donor_strain TEXT,
+                    donor_type TEXT NOT NULL DEFAULT 'male',
+                    collected_at TEXT NOT NULL,
+                    storage_method TEXT,
+                    storage_location TEXT,
+                    viability TEXT NOT NULL DEFAULT 'high',
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (donor_plant_id) REFERENCES plants(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS seed_batches (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    breeder TEXT,
+                    generation TEXT,
+                    seed_type TEXT NOT NULL DEFAULT 'regular',
+                    seed_count INTEGER NOT NULL DEFAULT 0,
+                    breeding_cross_id TEXT,
+                    mother_name TEXT,
+                    father_name TEXT,
+                    lineage_summary TEXT,
+                    harvested_at TEXT,
+                    storage_location TEXT,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS breeding_crosses (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    mother_plant_id TEXT,
+                    mother_name TEXT,
+                    mother_cross_id TEXT,
+                    father_plant_id TEXT,
+                    father_name TEXT,
+                    father_cross_id TEXT,
+                    pollen_batch_id TEXT,
+                    generation TEXT NOT NULL DEFAULT 'F1',
+                    pollination_date TEXT NOT NULL,
+                    pollination_scope TEXT NOT NULL DEFAULT 'branch',
+                    branch_tag TEXT,
+                    expected_maturity_date TEXT,
+                    seed_harvested_at TEXT,
+                    seed_count INTEGER,
+                    minted_seed_batch_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'pollinated',
+                    goals TEXT,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (mother_plant_id) REFERENCES plants(id) ON DELETE SET NULL,
+                    FOREIGN KEY (father_plant_id) REFERENCES plants(id) ON DELETE SET NULL,
+                    FOREIGN KEY (pollen_batch_id) REFERENCES pollen_batches(id) ON DELETE SET NULL,
+                    FOREIGN KEY (minted_seed_batch_id) REFERENCES seed_batches(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS pheno_hunts (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    breeding_cross_id TEXT,
+                    seed_batch_id TEXT,
+                    strain TEXT,
+                    breeder TEXT,
+                    started_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    selection_goals TEXT,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (breeding_cross_id) REFERENCES breeding_crosses(id) ON DELETE SET NULL,
+                    FOREIGN KEY (seed_batch_id) REFERENCES seed_batches(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS pheno_scores (
+                    id TEXT PRIMARY KEY,
+                    pheno_hunt_id TEXT NOT NULL,
+                    plant_id TEXT NOT NULL,
+                    pheno_code TEXT,
+                    status TEXT NOT NULL DEFAULT 'evaluating',
+                    vigor INTEGER,
+                    stretch_factor REAL,
+                    internode_spacing TEXT,
+                    resin_density INTEGER,
+                    pest_mold_resistance INTEGER,
+                    aroma_score INTEGER,
+                    terpene_notes TEXT,
+                    flower_days INTEGER,
+                    yield_g REAL,
+                    notes TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (pheno_hunt_id, plant_id),
+                    FOREIGN KEY (pheno_hunt_id) REFERENCES pheno_hunts(id) ON DELETE CASCADE,
+                    FOREIGN KEY (plant_id) REFERENCES plants(id) ON DELETE CASCADE
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_plants_env ON plants(environment_id);
                 CREATE INDEX IF NOT EXISTS idx_stage_history_plant ON stage_history(plant_id, started_at);
                 CREATE INDEX IF NOT EXISTS idx_logs_plant_logged ON logs(plant_id, logged_at DESC);
@@ -316,9 +423,12 @@ class IGroDatabase:
                 CREATE INDEX IF NOT EXISTS idx_harvests_date ON harvests(harvested_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_curing_harvest ON curing_logs(harvest_id, logged_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, due_at ASC);
+                CREATE INDEX IF NOT EXISTS idx_pollen_collected ON pollen_batches(collected_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_crosses_date ON breeding_crosses(pollination_date DESC);
+                CREATE INDEX IF NOT EXISTS idx_pheno_scores_hunt ON pheno_scores(pheno_hunt_id);
                 """
             )
-            # Safe additive migrations for pre-v4 databases
+            # Safe additive migrations for pre-v6 databases
             log_cols = {
                 r["name"] for r in conn.execute("PRAGMA table_info(logs)").fetchall()
             }
@@ -337,6 +447,8 @@ class IGroDatabase:
             }
             if "grow_cycle_id" not in plant_cols:
                 conn.execute("ALTER TABLE plants ADD COLUMN grow_cycle_id TEXT")
+            if "breeding_cross_id" not in plant_cols:
+                conn.execute("ALTER TABLE plants ADD COLUMN breeding_cross_id TEXT")
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
@@ -436,6 +548,36 @@ class IGroDatabase:
                 dict(r)
                 for r in conn.execute(
                     "SELECT * FROM reminders ORDER BY status ASC, due_at ASC, created_at ASC"
+                ).fetchall()
+            ]
+            pollen_batches = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM pollen_batches ORDER BY collected_at DESC, created_at DESC"
+                ).fetchall()
+            ]
+            seed_batches = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM seed_batches ORDER BY created_at DESC"
+                ).fetchall()
+            ]
+            breeding_crosses = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM breeding_crosses ORDER BY pollination_date DESC, created_at DESC"
+                ).fetchall()
+            ]
+            pheno_hunts = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM pheno_hunts ORDER BY started_at DESC, created_at DESC"
+                ).fetchall()
+            ]
+            pheno_scores = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM pheno_scores ORDER BY pheno_code ASC, created_at ASC"
                 ).fetchall()
             ]
 
@@ -551,6 +693,11 @@ class IGroDatabase:
                 "harvests": harvests,
                 "curing_logs": curing_logs,
                 "reminders": reminders,
+                "pollen_batches": pollen_batches,
+                "seed_batches": seed_batches,
+                "breeding_crosses": breeding_crosses,
+                "pheno_hunts": pheno_hunts,
+                "pheno_scores": pheno_scores,
                 "totals": {
                     "logs": total_logs,
                     "photos": total_photos,
@@ -2249,4 +2396,621 @@ class IGroDatabase:
     def _delete_reminder_sync(self, reminder_id: str) -> bool:
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+            return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Pollen Vault CRUD
+    # ------------------------------------------------------------------
+    async def async_list_pollen_batches(self) -> list[dict[str, Any]]:
+        """List all stored pollen batches."""
+        return await self._run(self._list_pollen_batches_sync)
+
+    def _list_pollen_batches_sync(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM pollen_batches ORDER BY collected_at DESC, created_at DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    async def async_create_pollen_batch(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create a pollen vault batch."""
+        return await self._run(self._create_pollen_batch_sync, data)
+
+    def _create_pollen_batch_sync(self, data: dict[str, Any]) -> dict[str, Any]:
+        batch_id = data.get("id") or uuid.uuid4().hex[:12]
+        now = utc_now_iso()
+        donor_plant_id = data.get("donor_plant_id") or None
+        donor_strain = data.get("donor_strain") or None
+
+        with self._connect() as conn:
+            if donor_plant_id and not donor_strain:
+                prow = conn.execute(
+                    "SELECT strain, name FROM plants WHERE id = ?", (donor_plant_id,)
+                ).fetchone()
+                if prow:
+                    donor_strain = prow["strain"] or prow["name"]
+
+            record = {
+                "id": batch_id,
+                "name": (data.get("name") or "Pollen Batch").strip(),
+                "donor_plant_id": donor_plant_id,
+                "donor_strain": donor_strain,
+                "donor_type": data.get("donor_type") or "male",
+                "collected_at": data.get("collected_at") or now[:10],
+                "storage_method": data.get("storage_method") or None,
+                "storage_location": data.get("storage_location") or None,
+                "viability": data.get("viability") or "high",
+                "notes": data.get("notes") or None,
+                "created_at": now,
+                "updated_at": now,
+            }
+            cols = ", ".join(record.keys())
+            placeholders = ", ".join(["?"] * len(record))
+            conn.execute(
+                f"INSERT INTO pollen_batches ({cols}) VALUES ({placeholders})",
+                list(record.values()),
+            )
+            row = conn.execute(
+                "SELECT * FROM pollen_batches WHERE id = ?", (batch_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_update_pollen_batch(
+        self, batch_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Update an existing pollen batch."""
+        return await self._run(self._update_pollen_batch_sync, batch_id, data)
+
+    def _update_pollen_batch_sync(
+        self, batch_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        allowed = {
+            "name",
+            "donor_plant_id",
+            "donor_strain",
+            "donor_type",
+            "collected_at",
+            "storage_method",
+            "storage_location",
+            "viability",
+            "notes",
+        }
+        updates = {k: v for k, v in data.items() if k in allowed}
+        if "name" in updates and not updates["name"]:
+            updates.pop("name")
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM pollen_batches WHERE id = ?", (batch_id,)
+            ).fetchone()
+            if not existing:
+                return None
+            if updates:
+                updates["updated_at"] = utc_now_iso()
+                set_clause = ", ".join(f"{k} = ?" for k in updates)
+                conn.execute(
+                    f"UPDATE pollen_batches SET {set_clause} WHERE id = ?",
+                    [*updates.values(), batch_id],
+                )
+            row = conn.execute(
+                "SELECT * FROM pollen_batches WHERE id = ?", (batch_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_delete_pollen_batch(self, batch_id: str) -> bool:
+        """Delete a pollen vault batch."""
+        return await self._run(self._delete_pollen_batch_sync, batch_id)
+
+    def _delete_pollen_batch_sync(self, batch_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM pollen_batches WHERE id = ?", (batch_id,))
+            return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Breeding Crosses & Seed Harvesting (Auto-Mint to Seedbank)
+    # ------------------------------------------------------------------
+    async def async_list_breeding_crosses(self) -> list[dict[str, Any]]:
+        """List all breeding crosses."""
+        return await self._run(self._list_breeding_crosses_sync)
+
+    def _list_breeding_crosses_sync(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM breeding_crosses ORDER BY pollination_date DESC, created_at DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    async def async_create_breeding_cross(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create a breeding cross / pollination project."""
+        return await self._run(self._create_breeding_cross_sync, data)
+
+    def _create_breeding_cross_sync(self, data: dict[str, Any]) -> dict[str, Any]:
+        cross_id = data.get("id") or uuid.uuid4().hex[:12]
+        now = utc_now_iso()
+        poll_date = data.get("pollination_date") or now[:10]
+        exp_maturity = data.get("expected_maturity_date") or calculate_seed_maturity_date(
+            poll_date, weeks=6
+        )
+
+        record = {
+            "id": cross_id,
+            "name": (data.get("name") or "New Cross").strip(),
+            "mother_plant_id": data.get("mother_plant_id") or None,
+            "mother_name": data.get("mother_name") or None,
+            "mother_cross_id": data.get("mother_cross_id") or None,
+            "father_plant_id": data.get("father_plant_id") or None,
+            "father_name": data.get("father_name") or None,
+            "father_cross_id": data.get("father_cross_id") or None,
+            "pollen_batch_id": data.get("pollen_batch_id") or None,
+            "generation": data.get("generation") or "F1",
+            "pollination_date": poll_date,
+            "pollination_scope": data.get("pollination_scope") or "branch",
+            "branch_tag": data.get("branch_tag") or None,
+            "expected_maturity_date": exp_maturity,
+            "seed_harvested_at": data.get("seed_harvested_at") or None,
+            "seed_count": (
+                int(data["seed_count"])
+                if data.get("seed_count") not in (None, "")
+                else None
+            ),
+            "minted_seed_batch_id": None,
+            "status": data.get("status") or "pollinated",
+            "goals": data.get("goals") or None,
+            "notes": data.get("notes") or None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        cols = ", ".join(record.keys())
+        placeholders = ", ".join(["?"] * len(record))
+        with self._connect() as conn:
+            conn.execute(
+                f"INSERT INTO breeding_crosses ({cols}) VALUES ({placeholders})",
+                list(record.values()),
+            )
+            row = conn.execute(
+                "SELECT * FROM breeding_crosses WHERE id = ?", (cross_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_update_breeding_cross(
+        self, cross_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Update an existing breeding cross."""
+        return await self._run(self._update_breeding_cross_sync, cross_id, data)
+
+    def _update_breeding_cross_sync(
+        self, cross_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        allowed = {
+            "name",
+            "mother_plant_id",
+            "mother_name",
+            "mother_cross_id",
+            "father_plant_id",
+            "father_name",
+            "father_cross_id",
+            "pollen_batch_id",
+            "generation",
+            "pollination_date",
+            "pollination_scope",
+            "branch_tag",
+            "expected_maturity_date",
+            "seed_harvested_at",
+            "seed_count",
+            "status",
+            "goals",
+            "notes",
+        }
+        updates: dict[str, Any] = {k: v for k, v in data.items() if k in allowed}
+        if "name" in updates and not updates["name"]:
+            updates.pop("name")
+        if "seed_count" in updates:
+            raw = updates["seed_count"]
+            updates["seed_count"] = int(raw) if raw not in (None, "") else None
+        if (
+            "pollination_date" in updates
+            and updates["pollination_date"]
+            and "expected_maturity_date" not in updates
+        ):
+            updates["expected_maturity_date"] = calculate_seed_maturity_date(
+                updates["pollination_date"], weeks=6
+            )
+
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM breeding_crosses WHERE id = ?", (cross_id,)
+            ).fetchone()
+            if not existing:
+                return None
+            if updates:
+                updates["updated_at"] = utc_now_iso()
+                set_clause = ", ".join(f"{k} = ?" for k in updates)
+                conn.execute(
+                    f"UPDATE breeding_crosses SET {set_clause} WHERE id = ?",
+                    [*updates.values(), cross_id],
+                )
+            row = conn.execute(
+                "SELECT * FROM breeding_crosses WHERE id = ?", (cross_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_harvest_cross_seeds(
+        self, cross_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Harvest mature seeds from a cross and auto-mint a Seedbank batch."""
+        return await self._run(self._harvest_cross_seeds_sync, cross_id, data)
+
+    def _harvest_cross_seeds_sync(
+        self, cross_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        now = utc_now_iso()
+        harvested_at = data.get("harvested_at") or now[:10]
+        seed_count = (
+            int(data["seed_count"]) if data.get("seed_count") not in (None, "") else 0
+        )
+        mint_seedbank = bool(data.get("mint_seedbank", True))
+
+        with self._connect() as conn:
+            cross = conn.execute(
+                "SELECT * FROM breeding_crosses WHERE id = ?", (cross_id,)
+            ).fetchone()
+            if not cross:
+                return None
+
+            # Resolve human-readable parent names
+            mother_label = cross["mother_name"]
+            if not mother_label and cross["mother_plant_id"]:
+                prow = conn.execute(
+                    "SELECT name, strain FROM plants WHERE id = ?",
+                    (cross["mother_plant_id"],),
+                ).fetchone()
+                if prow:
+                    mother_label = prow["strain"] or prow["name"]
+            if not mother_label and cross["mother_cross_id"]:
+                crow = conn.execute(
+                    "SELECT name FROM breeding_crosses WHERE id = ?",
+                    (cross["mother_cross_id"],),
+                ).fetchone()
+                if crow:
+                    mother_label = crow["name"]
+
+            father_label = cross["father_name"]
+            pollen_donor_type = None
+            if cross["pollen_batch_id"]:
+                pb = conn.execute(
+                    "SELECT name, donor_strain, donor_type FROM pollen_batches WHERE id = ?",
+                    (cross["pollen_batch_id"],),
+                ).fetchone()
+                if pb:
+                    pollen_donor_type = pb["donor_type"]
+                    father_label = father_label or pb["donor_strain"] or pb["name"]
+            if not father_label and cross["father_plant_id"]:
+                prow = conn.execute(
+                    "SELECT name, strain FROM plants WHERE id = ?",
+                    (cross["father_plant_id"],),
+                ).fetchone()
+                if prow:
+                    father_label = prow["strain"] or prow["name"]
+            if not father_label and cross["father_cross_id"]:
+                crow = conn.execute(
+                    "SELECT name FROM breeding_crosses WHERE id = ?",
+                    (cross["father_cross_id"],),
+                ).fetchone()
+                if crow:
+                    father_label = crow["name"]
+
+            inferred_seed_type = data.get("seed_type")
+            if not inferred_seed_type:
+                if cross["generation"] == "S1" or pollen_donor_type in (
+                    "reversed_sts",
+                    "reversed_cs",
+                ):
+                    inferred_seed_type = "feminized"
+                else:
+                    inferred_seed_type = "regular"
+
+            lineage = f"{mother_label or 'Unknown'} × {father_label or 'Unknown'} ({cross['generation']})"
+
+            seed_batch: dict[str, Any] | None = None
+            batch_id = cross["minted_seed_batch_id"]
+            if mint_seedbank:
+                if batch_id:
+                    conn.execute(
+                        """
+                        UPDATE seed_batches
+                        SET seed_count = ?, seed_type = ?, harvested_at = ?,
+                            storage_location = COALESCE(?, storage_location),
+                            notes = COALESCE(?, notes), updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            seed_count,
+                            inferred_seed_type,
+                            harvested_at,
+                            data.get("storage_location") or None,
+                            data.get("notes") or None,
+                            now,
+                            batch_id,
+                        ),
+                    )
+                else:
+                    batch_id = uuid.uuid4().hex[:12]
+                    batch_record = {
+                        "id": batch_id,
+                        "name": (data.get("batch_name") or cross["name"]).strip(),
+                        "breeder": data.get("breeder") or "Homebred (iGro)",
+                        "generation": cross["generation"],
+                        "seed_type": inferred_seed_type,
+                        "seed_count": seed_count,
+                        "breeding_cross_id": cross_id,
+                        "mother_name": mother_label,
+                        "father_name": father_label,
+                        "lineage_summary": lineage,
+                        "harvested_at": harvested_at,
+                        "storage_location": data.get("storage_location") or None,
+                        "notes": data.get("notes") or cross["notes"],
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                    bcols = ", ".join(batch_record.keys())
+                    bph = ", ".join(["?"] * len(batch_record))
+                    conn.execute(
+                        f"INSERT INTO seed_batches ({bcols}) VALUES ({bph})",
+                        list(batch_record.values()),
+                    )
+                srow = conn.execute(
+                    "SELECT * FROM seed_batches WHERE id = ?", (batch_id,)
+                ).fetchone()
+                seed_batch = dict(srow) if srow else None
+
+            conn.execute(
+                """
+                UPDATE breeding_crosses
+                SET status = 'harvested', seed_harvested_at = ?, seed_count = ?,
+                    minted_seed_batch_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (harvested_at, seed_count, batch_id if mint_seedbank else cross["minted_seed_batch_id"], now, cross_id),
+            )
+            updated_cross = conn.execute(
+                "SELECT * FROM breeding_crosses WHERE id = ?", (cross_id,)
+            ).fetchone()
+            return {"cross": dict(updated_cross), "seed_batch": seed_batch}
+
+    async def async_delete_breeding_cross(self, cross_id: str) -> bool:
+        """Delete a breeding cross."""
+        return await self._run(self._delete_breeding_cross_sync, cross_id)
+
+    def _delete_breeding_cross_sync(self, cross_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM breeding_crosses WHERE id = ?", (cross_id,))
+            return cur.rowcount > 0
+
+    async def async_list_seed_batches(self) -> list[dict[str, Any]]:
+        """List minted seed batches."""
+        return await self._run(self._list_seed_batches_sync)
+
+    def _list_seed_batches_sync(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM seed_batches ORDER BY created_at DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    async def async_delete_seed_batch(self, batch_id: str) -> bool:
+        """Delete a seed batch."""
+        return await self._run(self._delete_seed_batch_sync, batch_id)
+
+    def _delete_seed_batch_sync(self, batch_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM seed_batches WHERE id = ?", (batch_id,))
+            return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Pheno-Hunts & Sibling Phenotype Scorecards CRUD
+    # ------------------------------------------------------------------
+    async def async_list_pheno_hunts(self) -> list[dict[str, Any]]:
+        """List all pheno hunts."""
+        return await self._run(self._list_pheno_hunts_sync)
+
+    def _list_pheno_hunts_sync(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM pheno_hunts ORDER BY started_at DESC, created_at DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    async def async_create_pheno_hunt(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create a pheno-hunt session."""
+        return await self._run(self._create_pheno_hunt_sync, data)
+
+    def _create_pheno_hunt_sync(self, data: dict[str, Any]) -> dict[str, Any]:
+        hunt_id = data.get("id") or uuid.uuid4().hex[:12]
+        now = utc_now_iso()
+        cross_id = data.get("breeding_cross_id") or None
+        strain = data.get("strain") or None
+
+        with self._connect() as conn:
+            if cross_id and not strain:
+                crow = conn.execute(
+                    "SELECT name FROM breeding_crosses WHERE id = ?", (cross_id,)
+                ).fetchone()
+                if crow:
+                    strain = crow["name"]
+
+            record = {
+                "id": hunt_id,
+                "name": (data.get("name") or "Pheno Hunt").strip(),
+                "breeding_cross_id": cross_id,
+                "seed_batch_id": data.get("seed_batch_id") or None,
+                "strain": strain,
+                "breeder": data.get("breeder") or None,
+                "started_at": data.get("started_at") or now[:10],
+                "status": data.get("status") or "active",
+                "selection_goals": data.get("selection_goals") or None,
+                "notes": data.get("notes") or None,
+                "created_at": now,
+                "updated_at": now,
+            }
+            cols = ", ".join(record.keys())
+            placeholders = ", ".join(["?"] * len(record))
+            conn.execute(
+                f"INSERT INTO pheno_hunts ({cols}) VALUES ({placeholders})",
+                list(record.values()),
+            )
+            row = conn.execute(
+                "SELECT * FROM pheno_hunts WHERE id = ?", (hunt_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_update_pheno_hunt(
+        self, hunt_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Update a pheno-hunt session."""
+        return await self._run(self._update_pheno_hunt_sync, hunt_id, data)
+
+    def _update_pheno_hunt_sync(
+        self, hunt_id: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        allowed = {
+            "name",
+            "breeding_cross_id",
+            "seed_batch_id",
+            "strain",
+            "breeder",
+            "started_at",
+            "status",
+            "selection_goals",
+            "notes",
+        }
+        updates = {k: v for k, v in data.items() if k in allowed}
+        if "name" in updates and not updates["name"]:
+            updates.pop("name")
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM pheno_hunts WHERE id = ?", (hunt_id,)
+            ).fetchone()
+            if not existing:
+                return None
+            if updates:
+                updates["updated_at"] = utc_now_iso()
+                set_clause = ", ".join(f"{k} = ?" for k in updates)
+                conn.execute(
+                    f"UPDATE pheno_hunts SET {set_clause} WHERE id = ?",
+                    [*updates.values(), hunt_id],
+                )
+            row = conn.execute(
+                "SELECT * FROM pheno_hunts WHERE id = ?", (hunt_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_delete_pheno_hunt(self, hunt_id: str) -> bool:
+        """Delete a pheno hunt and its sibling scores."""
+        return await self._run(self._delete_pheno_hunt_sync, hunt_id)
+
+    def _delete_pheno_hunt_sync(self, hunt_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM pheno_hunts WHERE id = ?", (hunt_id,))
+            return cur.rowcount > 0
+
+    async def async_upsert_pheno_score(
+        self, pheno_hunt_id: str, plant_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Create or update a phenotype trait scorecard for a sibling plant."""
+        return await self._run(
+            self._upsert_pheno_score_sync, pheno_hunt_id, plant_id, data
+        )
+
+    def _upsert_pheno_score_sync(
+        self, pheno_hunt_id: str, plant_id: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        now = utc_now_iso()
+
+        def _int_or_none(val: Any) -> int | None:
+            return int(val) if val not in (None, "") else None
+
+        def _float_or_none(val: Any) -> float | None:
+            return float(val) if val not in (None, "") else None
+
+        status = data.get("status") or "evaluating"
+        if status not in ("evaluating", "keeper", "breeder", "cull"):
+            status = "evaluating"
+
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM pheno_scores WHERE pheno_hunt_id = ? AND plant_id = ?",
+                (pheno_hunt_id, plant_id),
+            ).fetchone()
+            if existing:
+                score_id = existing["id"]
+                conn.execute(
+                    """
+                    UPDATE pheno_scores
+                    SET pheno_code = ?, status = ?, vigor = ?, stretch_factor = ?,
+                        internode_spacing = ?, resin_density = ?, pest_mold_resistance = ?,
+                        aroma_score = ?, terpene_notes = ?, flower_days = ?, yield_g = ?,
+                        notes = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        data.get("pheno_code") or existing["pheno_code"],
+                        status,
+                        _int_or_none(data.get("vigor")),
+                        _float_or_none(data.get("stretch_factor")),
+                        data.get("internode_spacing") or None,
+                        _int_or_none(data.get("resin_density")),
+                        _int_or_none(data.get("pest_mold_resistance")),
+                        _int_or_none(data.get("aroma_score")),
+                        data.get("terpene_notes") or None,
+                        _int_or_none(data.get("flower_days")),
+                        _float_or_none(data.get("yield_g")),
+                        data.get("notes") or None,
+                        now,
+                        score_id,
+                    ),
+                )
+            else:
+                score_id = data.get("id") or uuid.uuid4().hex[:12]
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM pheno_scores WHERE pheno_hunt_id = ?",
+                    (pheno_hunt_id,),
+                ).fetchone()[0]
+                record = {
+                    "id": score_id,
+                    "pheno_hunt_id": pheno_hunt_id,
+                    "plant_id": plant_id,
+                    "pheno_code": data.get("pheno_code") or f"#{count + 1}",
+                    "status": status,
+                    "vigor": _int_or_none(data.get("vigor")),
+                    "stretch_factor": _float_or_none(data.get("stretch_factor")),
+                    "internode_spacing": data.get("internode_spacing") or None,
+                    "resin_density": _int_or_none(data.get("resin_density")),
+                    "pest_mold_resistance": _int_or_none(
+                        data.get("pest_mold_resistance")
+                    ),
+                    "aroma_score": _int_or_none(data.get("aroma_score")),
+                    "terpene_notes": data.get("terpene_notes") or None,
+                    "flower_days": _int_or_none(data.get("flower_days")),
+                    "yield_g": _float_or_none(data.get("yield_g")),
+                    "notes": data.get("notes") or None,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                cols = ", ".join(record.keys())
+                placeholders = ", ".join(["?"] * len(record))
+                conn.execute(
+                    f"INSERT INTO pheno_scores ({cols}) VALUES ({placeholders})",
+                    list(record.values()),
+                )
+            row = conn.execute(
+                "SELECT * FROM pheno_scores WHERE id = ?", (score_id,)
+            ).fetchone()
+            return dict(row)
+
+    async def async_delete_pheno_score(self, score_id: str) -> bool:
+        """Remove a plant's scorecard from a pheno hunt."""
+        return await self._run(self._delete_pheno_score_sync, score_id)
+
+    def _delete_pheno_score_sync(self, score_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM pheno_scores WHERE id = ?", (score_id,))
             return cur.rowcount > 0

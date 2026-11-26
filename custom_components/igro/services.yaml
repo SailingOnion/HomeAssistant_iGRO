@@ -24,6 +24,8 @@ log_action:
             - transplant
             - flush
             - pest_issue
+            - pollination
+            - reversal
             - note
     title:
       name: Title
