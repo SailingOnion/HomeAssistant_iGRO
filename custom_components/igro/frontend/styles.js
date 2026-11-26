@@ -859,6 +859,91 @@ export const PANEL_STYLES = `
   border-left-color: var(--igro-danger);
 }
 
+/* Pedigree Tree Diagram */
+.pedigree-scroll {
+  overflow-x: auto;
+  padding: 10px 4px;
+}
+
+.pedigree-branch {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.pedigree-node {
+  min-width: 175px;
+  max-width: 220px;
+  background: var(--igro-surface-2);
+  border: 1px solid var(--igro-border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  flex-shrink: 0;
+}
+
+.pedigree-node.cross {
+  border-color: var(--igro-accent);
+  background: rgba(22, 163, 74, 0.08);
+}
+
+.pedigree-node.pollen {
+  border-color: #eab308;
+}
+
+.pedigree-parents {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-left: 16px;
+  border-left: 2px solid var(--igro-border);
+  position: relative;
+}
+
+.pedigree-role {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pedigree-role.mother { color: #ec4899; }
+.pedigree-role.father { color: #0ea5e9; }
+.pedigree-role.root { color: var(--igro-accent); }
+
+/* Pheno Comparison Matrix Table */
+.pheno-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--igro-border);
+  border-radius: var(--igro-radius);
+  background: var(--igro-surface);
+}
+
+.pheno-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.pheno-table th,
+.pheno-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--igro-border);
+  white-space: nowrap;
+}
+
+.pheno-table th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--igro-text-muted);
+  background: var(--igro-surface-2);
+}
+
+.pheno-table tr:last-child td {
+  border-bottom: none;
+}
+
 @media (max-width: 680px) {
   .container { padding: 14px; }
   .form-grid { grid-template-columns: 1fr; }

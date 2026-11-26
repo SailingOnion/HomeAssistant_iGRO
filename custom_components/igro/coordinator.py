@@ -14,9 +14,11 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .calculations import (
+    build_pedigree_tree,
     calculate_dew_point_c,
     calculate_vpd_kpa,
     compute_harvest_metrics,
+    compute_pheno_overall_score,
     compute_plant_day_metrics,
     days_since,
     evaluate_range_status,
@@ -531,6 +533,129 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     },
                 )
 
+        # Enrich breeding program: pollen vault, crosses + pedigree trees, seed batches & pheno hunts
+        raw_pollen: list[dict[str, Any]] = snapshot.get("pollen_batches", [])
+        raw_crosses: list[dict[str, Any]] = snapshot.get("breeding_crosses", [])
+        raw_seed_batches: list[dict[str, Any]] = snapshot.get("seed_batches", [])
+        raw_pheno_hunts: list[dict[str, Any]] = snapshot.get("pheno_hunts", [])
+        raw_pheno_scores: list[dict[str, Any]] = snapshot.get("pheno_scores", [])
+
+        enriched_pollen = [
+            {
+                **pb,
+                "donor_plant_name": (
+                    plants_map[pb["donor_plant_id"]]["name"]
+                    if pb.get("donor_plant_id") in plants_map
+                    else None
+                ),
+            }
+            for pb in raw_pollen
+        ]
+        pollen_by_id = {pb["id"]: pb for pb in enriched_pollen}
+        crosses_by_id = {c["id"]: c for c in raw_crosses}
+        seed_batches_by_id = {sb["id"]: sb for sb in raw_seed_batches}
+
+        descendants_by_cross: dict[str, list[dict[str, Any]]] = {}
+        for c in raw_crosses:
+            for parent_col in ("mother_cross_id", "father_cross_id"):
+                pid_c = c.get(parent_col)
+                if pid_c:
+                    descendants_by_cross.setdefault(pid_c, []).append(
+                        {
+                            "id": c["id"],
+                            "name": c["name"],
+                            "generation": c.get("generation"),
+                        }
+                    )
+
+        enriched_crosses: list[dict[str, Any]] = []
+        for c in raw_crosses:
+            cid = c["id"]
+            mother_plant = plants_map.get(c.get("mother_plant_id") or "")
+            father_plant = plants_map.get(c.get("father_plant_id") or "")
+            pollen_batch = pollen_by_id.get(c.get("pollen_batch_id") or "")
+            mother_cross = crosses_by_id.get(c.get("mother_cross_id") or "")
+            father_cross = crosses_by_id.get(c.get("father_cross_id") or "")
+
+            mother_display = (
+                (mother_plant["name"] if mother_plant else None)
+                or (mother_cross["name"] if mother_cross else None)
+                or c.get("mother_name")
+                or "Unknown Mother"
+            )
+            father_display = (
+                (pollen_batch["name"] if pollen_batch else None)
+                or (father_plant["name"] if father_plant else None)
+                or (father_cross["name"] if father_cross else None)
+                or c.get("father_name")
+                or "Unknown Donor"
+            )
+            days_poll = days_since(c.get("pollination_date"), now_utc)
+            mat_dt = parse_iso_datetime(c.get("expected_maturity_date"))
+            days_to_mat = (
+                (mat_dt.date() - today_utc).days if mat_dt is not None else None
+            )
+
+            enriched_crosses.append(
+                {
+                    **c,
+                    "mother_display": mother_display,
+                    "father_display": father_display,
+                    "pollen_batch_name": pollen_batch["name"] if pollen_batch else None,
+                    "days_since_pollination": days_poll,
+                    "days_to_maturity": days_to_mat,
+                    "minted_seed_batch": seed_batches_by_id.get(
+                        c.get("minted_seed_batch_id") or ""
+                    ),
+                    "pedigree_tree": build_pedigree_tree(
+                        cid, crosses_by_id, plants_map, pollen_by_id
+                    ),
+                    "descendants": descendants_by_cross.get(cid, []),
+                }
+            )
+
+        scores_by_hunt: dict[str, list[dict[str, Any]]] = {}
+        for sc in raw_pheno_scores:
+            plant_obj = plants_map.get(sc.get("plant_id") or "")
+            harvest_yield = (
+                plant_obj.get("harvest", {}).get("dry_weight_g")
+                if plant_obj and plant_obj.get("harvest")
+                else None
+            )
+            enriched_sc = {
+                **sc,
+                "plant_name": plant_obj["name"] if plant_obj else "Unknown Plant",
+                "plant_stage": plant_obj.get("stage") if plant_obj else None,
+                "plant_cover_photo_url": (
+                    plant_obj.get("cover_photo_url") if plant_obj else None
+                ),
+                "effective_yield_g": (
+                    sc["yield_g"] if sc.get("yield_g") is not None else harvest_yield
+                ),
+                "overall_score": compute_pheno_overall_score(sc),
+            }
+            scores_by_hunt.setdefault(sc["pheno_hunt_id"], []).append(enriched_sc)
+
+        enriched_pheno_hunts: list[dict[str, Any]] = []
+        for hunt in raw_pheno_hunts:
+            h_scores = scores_by_hunt.get(hunt["id"], [])
+            cross_obj = crosses_by_id.get(hunt.get("breeding_cross_id") or "")
+            enriched_pheno_hunts.append(
+                {
+                    **hunt,
+                    "breeding_cross_name": cross_obj["name"] if cross_obj else None,
+                    "scores": h_scores,
+                    "plant_count": len(h_scores),
+                    "keeper_count": sum(
+                        1 for s in h_scores if s.get("status") == "keeper"
+                    ),
+                    "breeder_count": sum(
+                        1 for s in h_scores if s.get("status") == "breeder"
+                    ),
+                    "cull_count": sum(1 for s in h_scores if s.get("status") == "cull"),
+                }
+            )
+
         self._rebind_state_listeners(tracked_entity_ids)
 
         return {
@@ -544,6 +669,10 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "grow_cycles": enriched_cycles,
             "harvests": enriched_harvests,
             "reminders": enriched_reminders,
+            "pollen_batches": enriched_pollen,
+            "breeding_crosses": enriched_crosses,
+            "seed_batches": raw_seed_batches,
+            "pheno_hunts": enriched_pheno_hunts,
             "summary": {
                 "active_plants": active_plant_count,
                 "total_plants": len(plants_map),
@@ -558,6 +687,10 @@ class IGroCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "total_grow_cycles": len(enriched_cycles),
                 "active_reminders": active_reminders_count,
                 "due_reminders": due_reminders_count,
+                "pollen_batches": len(enriched_pollen),
+                "breeding_crosses": len(enriched_crosses),
+                "pheno_hunts": len(enriched_pheno_hunts),
+                "seed_batches": len(raw_seed_batches),
             },
         }
 

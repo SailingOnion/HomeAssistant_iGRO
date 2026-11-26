@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import math
 from typing import Any
 
@@ -313,4 +313,137 @@ def compute_harvest_metrics(
         "effective_wattage": round(wattage, 1) if wattage is not None else None,
         "grams_per_watt": grams_per_watt,
         "curing_days": curing_days,
+    }
+
+
+def calculate_seed_maturity_date(
+    pollination_date: str | None, weeks: int = 6
+) -> str | None:
+    """Estimate seed maturity date (~5-6 weeks after pollination)."""
+    dt = parse_iso_datetime(pollination_date)
+    if dt is None:
+        return None
+    return (dt + timedelta(days=weeks * 7)).date().isoformat()
+
+
+def compute_pheno_overall_score(score: dict[str, Any]) -> float | None:
+    """Compute average 1-5 trait score across populated rating dimensions."""
+    vals: list[float] = []
+    for key in ("vigor", "resin_density", "pest_mold_resistance", "aroma_score"):
+        raw = score.get(key)
+        if raw is not None:
+            try:
+                vals.append(float(raw))
+            except (ValueError, TypeError):
+                continue
+    if not vals:
+        return None
+    return round(sum(vals) / len(vals), 2)
+
+
+def build_pedigree_tree(
+    cross_id: str,
+    crosses_by_id: dict[str, dict[str, Any]],
+    plants_by_id: dict[str, dict[str, Any]],
+    pollen_by_id: dict[str, dict[str, Any]] | None = None,
+    max_depth: int = 5,
+    _visited: frozenset[str] | None = None,
+) -> dict[str, Any] | None:
+    """Build a cycle-safe multi-generation ancestor pedigree tree for a cross."""
+    cross = crosses_by_id.get(cross_id)
+    if not cross:
+        return None
+
+    visited = _visited or frozenset()
+    if cross_id in visited or max_depth <= 0:
+        return {
+            "id": cross["id"],
+            "name": cross["name"],
+            "generation": cross.get("generation"),
+            "node_type": "cross",
+            "mother": None,
+            "father": None,
+        }
+
+    next_visited = visited | {cross_id}
+    pollen_map = pollen_by_id or {}
+
+    def _resolve_parent(
+        parent_cross_id: str | None,
+        plant_id: str | None,
+        fallback_name: str | None,
+        pollen_batch_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        if parent_cross_id and parent_cross_id in crosses_by_id:
+            return build_pedigree_tree(
+                parent_cross_id,
+                crosses_by_id,
+                plants_by_id,
+                pollen_map,
+                max_depth=max_depth - 1,
+                _visited=next_visited,
+            )
+        plant = plants_by_id.get(plant_id or "")
+        if plant:
+            plant_cross_id = plant.get("breeding_cross_id")
+            if plant_cross_id and plant_cross_id in crosses_by_id:
+                sub = build_pedigree_tree(
+                    plant_cross_id,
+                    crosses_by_id,
+                    plants_by_id,
+                    pollen_map,
+                    max_depth=max_depth - 1,
+                    _visited=next_visited,
+                )
+                if sub:
+                    sub = {**sub, "plant_name": plant["name"]}
+                    return sub
+            return {
+                "id": plant["id"],
+                "name": plant["name"],
+                "strain": plant.get("strain"),
+                "node_type": "plant",
+                "mother": None,
+                "father": None,
+            }
+        pollen = pollen_map.get(pollen_batch_id or "")
+        if pollen:
+            donor_plant = plants_by_id.get(pollen.get("donor_plant_id") or "")
+            return {
+                "id": pollen["id"],
+                "name": donor_plant["name"] if donor_plant else pollen["name"],
+                "strain": pollen.get("donor_strain")
+                or (donor_plant.get("strain") if donor_plant else None),
+                "donor_type": pollen.get("donor_type"),
+                "node_type": "pollen",
+                "mother": None,
+                "father": None,
+            }
+        if fallback_name:
+            return {
+                "id": None,
+                "name": fallback_name,
+                "node_type": "external",
+                "mother": None,
+                "father": None,
+            }
+        return None
+
+    return {
+        "id": cross["id"],
+        "name": cross["name"],
+        "generation": cross.get("generation"),
+        "status": cross.get("status"),
+        "node_type": "cross",
+        "mother": _resolve_parent(
+            cross.get("mother_cross_id"),
+            cross.get("mother_plant_id"),
+            cross.get("mother_name"),
+        ),
+        "father": _resolve_parent(
+            cross.get("father_cross_id"),
+            cross.get("father_plant_id"),
+            cross.get("father_name"),
+            pollen_batch_id=cross.get("pollen_batch_id"),
+        ),
     }

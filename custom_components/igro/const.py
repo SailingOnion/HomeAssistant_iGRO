@@ -117,6 +117,8 @@ LOG_TYPE_PEST_ISSUE = "pest_issue"
 LOG_TYPE_FLUSH = "flush"
 LOG_TYPE_DEFOLIATION = "defoliation"
 LOG_TYPE_TRANSPLANT = "transplant"
+LOG_TYPE_POLLINATION = "pollination"
+LOG_TYPE_REVERSAL = "reversal"
 LOG_TYPE_NOTE = "note"
 
 LOG_TYPES: list[str] = [
@@ -128,9 +130,37 @@ LOG_TYPES: list[str] = [
     LOG_TYPE_TRANSPLANT,
     LOG_TYPE_FLUSH,
     LOG_TYPE_PEST_ISSUE,
+    LOG_TYPE_POLLINATION,
+    LOG_TYPE_REVERSAL,
     LOG_TYPE_STAGE_CHANGE,
     LOG_TYPE_NOTE,
 ]
+
+# Breeding & pheno-hunt enumerations
+BREEDING_GENERATIONS: list[str] = [
+    "F1",
+    "F2",
+    "F3",
+    "F4",
+    "S1",
+    "BX1",
+    "BX2",
+    "IX",
+    "Polyhybrid",
+    "Landrace",
+    "Other",
+]
+
+POLLEN_DONOR_TYPES: list[str] = [
+    "male",
+    "reversed_sts",
+    "reversed_cs",
+    "other",
+]
+
+POLLEN_VIABILITIES: list[str] = ["high", "medium", "low", "depleted"]
+
+PHENO_STATUSES: list[str] = ["evaluating", "keeper", "breeder", "cull"]
 
 # VPD status values
 VPD_STATUS_OPTIMAL = "optimal"

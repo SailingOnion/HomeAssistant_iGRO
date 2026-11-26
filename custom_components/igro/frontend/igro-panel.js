@@ -7,6 +7,8 @@ import {
   IGroApi,
   LOG_TYPE_META,
   NUTRIENT_UNITS,
+  PHENO_STATUS_META,
+  POLLEN_DONOR_META,
   REMINDER_ACTION_META,
   STAGE_META,
   downloadTextFile,
@@ -19,24 +21,30 @@ import {
   scaleNutrientsForVolume,
   stageBadgeHtml,
   vpdBadgeHtml,
-} from "./api.js?v=0.5.0";
+} from "./api.js?v=0.6.0";
 import {
   renderConfirmModal,
+  renderCrossModal,
   renderCuringLogModal,
   renderEnvironmentModal,
   renderGrowCycleModal,
   renderHarvestModal,
+  renderHarvestSeedsModal,
   renderLightboxModal,
   renderLogModal,
+  renderPedigreeModal,
+  renderPhenoHuntModal,
+  renderPhenoScoreModal,
   renderPhotoModal,
   renderPlantModal,
+  renderPollenModal,
   renderPresetModal,
   renderReminderModal,
   renderScaledMixHtml,
   renderStageHistoryModal,
   renderStageModal,
-} from "./modals.js?v=0.5.0";
-import { PANEL_STYLES } from "./styles.js?v=0.5.0";
+} from "./modals.js?v=0.6.0";
+import { PANEL_STYLES } from "./styles.js?v=0.6.0";
 
 class IGroPanel extends HTMLElement {
   constructor() {
@@ -47,10 +55,12 @@ class IGroPanel extends HTMLElement {
     this._narrow = false;
     this._initialized = false;
 
-    this._tab = "overview"; // overview | plants | environments | journal | gallery
+    this._tab = "overview"; // overview | plants | environments | journal | gallery | breeding | archive
     this._selectedPlantId = null;
-    this._plantSubTab = "journal"; // journal | photos | history
-    this._journalSubTab = "logs"; // logs | presets
+    this._plantSubTab = "journal"; // journal | photos | history | harvest
+    this._journalSubTab = "logs"; // logs | reminders | presets
+    this._breedingSubTab = "crosses"; // crosses | phenos | pollen | seeds
+    this._selectedPhenoHuntId = null;
     this._filters = {
       plantSearch: "",
       plantStage: "",
@@ -77,6 +87,10 @@ class IGroPanel extends HTMLElement {
       grow_cycles: [],
       harvests: [],
       reminders: [],
+      pollen_batches: [],
+      breeding_crosses: [],
+      seed_batches: [],
+      pheno_hunts: [],
       summary: {},
       meta: { temperature_unit: "°C" },
     };
@@ -258,6 +272,8 @@ class IGroPanel extends HTMLElement {
       mainHtml = this._renderJournal(unit);
     } else if (this._tab === "gallery") {
       mainHtml = this._renderGallery();
+    } else if (this._tab === "breeding") {
+      mainHtml = this._renderBreeding();
     } else if (this._tab === "archive") {
       mainHtml = this._renderArchive();
     }
@@ -288,6 +304,18 @@ class IGroPanel extends HTMLElement {
         modalHtml = renderGrowCycleModal(this._modal.data);
       } else if (this._modal.type === "reminder") {
         modalHtml = renderReminderModal(this._modal.data, this._state);
+      } else if (this._modal.type === "pollen") {
+        modalHtml = renderPollenModal(this._modal.data, this._state);
+      } else if (this._modal.type === "cross") {
+        modalHtml = renderCrossModal(this._modal.data, this._state);
+      } else if (this._modal.type === "harvest_seeds") {
+        modalHtml = renderHarvestSeedsModal(this._modal.data);
+      } else if (this._modal.type === "pedigree") {
+        modalHtml = renderPedigreeModal(this._modal.data);
+      } else if (this._modal.type === "pheno_hunt") {
+        modalHtml = renderPhenoHuntModal(this._modal.data, this._state);
+      } else if (this._modal.type === "pheno_score") {
+        modalHtml = renderPhenoScoreModal(this._modal.data, this._state);
       } else if (this._modal.type === "confirm") {
         modalHtml = renderConfirmModal(this._modal.data);
       }
@@ -308,6 +336,7 @@ class IGroPanel extends HTMLElement {
             <button class="nav-tab ${this._tab === "environments" ? "active" : ""}" data-tab="environments">⛺ Environments</button>
             <button class="nav-tab ${this._tab === "journal" ? "active" : ""}" data-tab="journal">📓 Journal</button>
             <button class="nav-tab ${this._tab === "gallery" ? "active" : ""}" data-tab="gallery">📷 Gallery</button>
+            <button class="nav-tab ${this._tab === "breeding" ? "active" : ""}" data-tab="breeding">🧬 Breeding</button>
             <button class="nav-tab ${this._tab === "archive" ? "active" : ""}" data-tab="archive">🏆 Archive</button>
           </nav>
         </div>
@@ -1174,6 +1203,350 @@ class IGroPanel extends HTMLElement {
     `;
   }
 
+  _renderBreeding() {
+    const crosses = this._state.breeding_crosses || [];
+    const hunts = this._state.pheno_hunts || [];
+    const pollen = this._state.pollen_batches || [];
+    const seeds = this._state.seed_batches || [];
+
+    const headerAction =
+      this._breedingSubTab === "pollen"
+        ? `<button class="btn btn-primary" id="btn-add-pollen">+ Store Pollen</button>`
+        : this._breedingSubTab === "phenos"
+        ? `<button class="btn btn-primary" id="btn-add-pheno-hunt">+ New Pheno Hunt</button>`
+        : this._breedingSubTab === "seeds"
+        ? `<button class="btn" data-breeding-subtab="crosses">🧬 Harvest from Crosses</button>`
+        : `<button class="btn btn-primary" id="btn-add-cross">+ New Cross</button>`;
+
+    let bodyHtml = "";
+    if (this._breedingSubTab === "crosses") {
+      bodyHtml = crosses.length
+        ? `<div class="grid-cards">${crosses
+            .map((c) => {
+              const statusCls =
+                c.status === "harvested"
+                  ? "badge-ok"
+                  : c.status === "failed"
+                  ? "badge-danger"
+                  : c.status === "planned"
+                  ? "badge-muted"
+                  : "badge-info";
+              const matLabel =
+                c.status === "harvested"
+                  ? `Harvested ${formatDate(c.seed_harvested_at)}`
+                  : c.days_to_maturity !== null && c.days_to_maturity !== undefined
+                  ? c.days_to_maturity <= 0
+                    ? "Mature / Ready!"
+                    : `In ${c.days_to_maturity}d (${formatDate(c.expected_maturity_date)})`
+                  : formatDate(c.expected_maturity_date);
+
+              return `
+                <div class="card">
+                  <div class="card-body">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+                      <div>
+                        <h3 class="plant-title" style="margin:0;">🧬 ${escapeHtml(c.name)}</h3>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
+                          <span class="badge badge-info">${escapeHtml(c.generation)}</span>
+                          <span class="badge ${statusCls}">${escapeHtml(c.status)}</span>
+                          ${c.minted_seed_batch ? `<span class="badge badge-ok">🌰 ${c.seed_count ?? c.minted_seed_batch.seed_count} seeds</span>` : ""}
+                        </div>
+                      </div>
+                      <div style="display:flex;gap:6px;">
+                        <button class="btn btn-sm" data-edit-cross="${escapeHtml(c.id)}" title="Edit cross">✏️</button>
+                        <button class="btn btn-sm btn-danger" data-delete-cross="${escapeHtml(c.id)}" title="Delete cross">🗑</button>
+                      </div>
+                    </div>
+
+                    <div class="log-chips" style="margin-top:12px;">
+                      <span class="log-chip">♀️ <strong>${escapeHtml(c.mother_display)}</strong></span>
+                      <span class="log-chip">×</span>
+                      <span class="log-chip">♂️ <strong>${escapeHtml(c.father_display)}</strong></span>
+                    </div>
+
+                    <div class="stat-chips" style="margin-top:10px;">
+                      <div class="stat-chip">
+                        <div class="stat-chip-label">Pollinated</div>
+                        <div class="stat-chip-val">${formatDate(c.pollination_date)}</div>
+                      </div>
+                      <div class="stat-chip">
+                        <div class="stat-chip-label">Scope</div>
+                        <div class="stat-chip-val">${escapeHtml((c.pollination_scope || "branch").replace("_", " "))}</div>
+                      </div>
+                      <div class="stat-chip">
+                        <div class="stat-chip-label">Maturity</div>
+                        <div class="stat-chip-val" style="font-size:12px;">${escapeHtml(matLabel)}</div>
+                      </div>
+                    </div>
+
+                    ${c.branch_tag ? `<div style="font-size:12px;color:var(--igro-text-muted);margin-top:8px;">🏷 Tag: ${escapeHtml(c.branch_tag)}</div>` : ""}
+                    ${c.goals ? `<div style="font-size:12px;color:var(--igro-text-muted);margin-top:4px;">🎯 ${escapeHtml(c.goals)}</div>` : ""}
+                    ${c.notes ? `<p class="log-notes">${escapeHtml(c.notes)}</p>` : ""}
+
+                    <div style="margin-top:14px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                      <button class="btn btn-sm" data-view-pedigree="${escapeHtml(c.id)}">🌳 Pedigree Tree</button>
+                      <button class="btn btn-sm btn-primary" data-harvest-seeds="${escapeHtml(c.id)}">🌰 ${c.minted_seed_batch ? "Update Seeds" : "Harvest & Mint Seeds"}</button>
+                    </div>
+                  </div>
+                </div>
+              `;
+            })
+            .join("")}</div>`
+        : `<div class="empty-state">
+            <div class="empty-state-emoji">🧬</div>
+            <h3>No breeding crosses yet</h3>
+            <p>Track F1/F2/S1/BX1 crosses linking Mother × Pollen Donor, estimate 6-week seed maturity, view multi-generation pedigree trees, and mint harvested seeds straight to your Seedbank.</p>
+            <button class="btn btn-primary" id="btn-empty-cross">+ Create First Cross</button>
+          </div>`;
+    } else if (this._breedingSubTab === "phenos") {
+      if (!hunts.length) {
+        bodyHtml = `<div class="empty-state">
+          <div class="empty-state-emoji">🔍</div>
+          <h3>No pheno hunts yet</h3>
+          <p>Group sibling plants from a cross or seed pack and compare vigor, stretch, resin, terpene profiles, flowering time, and yield side by side to select keepers &amp; breeders.</p>
+          <button class="btn btn-primary" id="btn-empty-pheno-hunt">+ Start First Pheno Hunt</button>
+        </div>`;
+      } else {
+        const activeHunt =
+          hunts.find((h) => h.id === this._selectedPhenoHuntId) || hunts[0];
+        this._selectedPhenoHuntId = activeHunt.id;
+        const scores = activeHunt.scores || [];
+
+        bodyHtml = `
+          <div class="filter-bar" style="justify-content:space-between;align-items:center;">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <select class="select" id="select-pheno-hunt" style="min-width:240px;">
+                ${hunts
+                  .map(
+                    (h) =>
+                      `<option value="${escapeHtml(h.id)}" ${h.id === activeHunt.id ? "selected" : ""}>🔍 ${escapeHtml(h.name)} (${h.plant_count} phenos)</option>`
+                  )
+                  .join("")}
+              </select>
+              <button class="btn btn-sm" data-edit-pheno-hunt="${escapeHtml(activeHunt.id)}">✏️ Edit Hunt</button>
+              <button class="btn btn-sm btn-danger" data-delete-pheno-hunt="${escapeHtml(activeHunt.id)}">🗑</button>
+            </div>
+            <button class="btn btn-sm btn-primary" data-add-pheno-score="${escapeHtml(activeHunt.id)}">+ Score Sibling Plant</button>
+          </div>
+
+          <div class="card" style="margin-bottom:14px;">
+            <div class="card-body" style="padding:12px 16px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+                <div>
+                  <strong>${escapeHtml(activeHunt.name)}</strong>
+                  <span style="color:var(--igro-text-muted);font-size:12px;margin-left:8px;">
+                    ${escapeHtml([activeHunt.strain, activeHunt.breeder, activeHunt.breeding_cross_name ? `Cross: ${activeHunt.breeding_cross_name}` : ""].filter(Boolean).join(" · "))}
+                  </span>
+                </div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                  <span class="badge badge-ok">🏆 ${activeHunt.keeper_count} Keepers</span>
+                  <span class="badge badge-warn">🧬 ${activeHunt.breeder_count} Breeders</span>
+                  <span class="badge badge-danger">❌ ${activeHunt.cull_count} Culls</span>
+                </div>
+              </div>
+              ${activeHunt.selection_goals ? `<div style="font-size:12px;color:var(--igro-text-muted);margin-top:6px;">🎯 Goals: ${escapeHtml(activeHunt.selection_goals)}</div>` : ""}
+            </div>
+          </div>
+
+          ${
+            scores.length
+              ? `
+            <div class="pheno-table-wrap">
+              <table class="pheno-table">
+                <thead>
+                  <tr>
+                    <th>Pheno / Plant</th>
+                    <th>Status</th>
+                    <th>Overall</th>
+                    <th>Vigor</th>
+                    <th>Stretch</th>
+                    <th>Internode</th>
+                    <th>Resin</th>
+                    <th>Resist</th>
+                    <th>Aroma / Terps</th>
+                    <th>Flower</th>
+                    <th>Yield</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${scores
+                    .map((sc) => {
+                      const sm = PHENO_STATUS_META[sc.status] || PHENO_STATUS_META.evaluating;
+                      return `
+                        <tr>
+                          <td>
+                            <div style="font-weight:700;">${escapeHtml(sc.pheno_code || "")} ${escapeHtml(sc.plant_name)}</div>
+                            ${sc.plant_stage ? `<div style="font-size:11px;color:var(--igro-text-muted);">${escapeHtml(STAGE_META[sc.plant_stage]?.label || sc.plant_stage)}</div>` : ""}
+                          </td>
+                          <td><span class="badge ${sm.cls}">${sm.icon} ${sm.label}</span></td>
+                          <td><strong>${sc.overall_score !== null && sc.overall_score !== undefined ? `${sc.overall_score}/5` : "—"}</strong></td>
+                          <td>${sc.vigor ? `${sc.vigor}/5` : "—"}</td>
+                          <td>${sc.stretch_factor ? `${sc.stretch_factor}x` : "—"}</td>
+                          <td>${sc.internode_spacing ? escapeHtml(sc.internode_spacing) : "—"}</td>
+                          <td>${sc.resin_density ? `${sc.resin_density}/5` : "—"}</td>
+                          <td>${sc.pest_mold_resistance ? `${sc.pest_mold_resistance}/5` : "—"}</td>
+                          <td style="white-space:normal;min-width:140px;">
+                            ${sc.aroma_score ? `<strong>${sc.aroma_score}/5</strong> ` : ""}${escapeHtml(sc.terpene_notes || "—")}
+                          </td>
+                          <td>${sc.flower_days ? `${sc.flower_days}d` : "—"}</td>
+                          <td>${sc.effective_yield_g !== null && sc.effective_yield_g !== undefined ? `${sc.effective_yield_g}g` : "—"}</td>
+                          <td>
+                            <div style="display:flex;gap:4px;">
+                              <button class="btn btn-sm btn-icon" data-edit-pheno-score="${escapeHtml(sc.id)}" data-hunt-id="${escapeHtml(activeHunt.id)}" title="Edit score">✏️</button>
+                              <button class="btn btn-sm btn-icon btn-danger" data-delete-pheno-score="${escapeHtml(sc.id)}" title="Remove from hunt">✕</button>
+                            </div>
+                          </td>
+                        </tr>
+                      `;
+                    })
+                    .join("")}
+                </tbody>
+              </table>
+            </div>
+          `
+              : `<div class="empty-state">
+                  <p>No sibling plants scored in <strong>${escapeHtml(activeHunt.name)}</strong> yet. Click <strong>+ Score Sibling Plant</strong> above to start comparing phenotypes!</p>
+                </div>`
+          }
+        `;
+      }
+    } else if (this._breedingSubTab === "pollen") {
+      bodyHtml = pollen.length
+        ? `<div class="grid-cards">${pollen
+            .map((pb) => {
+              const dm = POLLEN_DONOR_META[pb.donor_type] || POLLEN_DONOR_META.other;
+              const viabCls =
+                pb.viability === "high"
+                  ? "badge-ok"
+                  : pb.viability === "medium"
+                  ? "badge-warn"
+                  : pb.viability === "low"
+                  ? "badge-danger"
+                  : "badge-muted";
+              return `
+                <div class="card">
+                  <div class="card-body">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+                      <div>
+                        <h3 class="plant-title" style="margin:0;">🌼 ${escapeHtml(pb.name)}</h3>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
+                          <span class="badge ${dm.cls}">${dm.icon} ${dm.label}</span>
+                          <span class="badge ${viabCls}">Viability: ${escapeHtml((pb.viability || "high").toUpperCase())}</span>
+                        </div>
+                      </div>
+                      <div style="display:flex;gap:6px;">
+                        <button class="btn btn-sm" data-edit-pollen="${escapeHtml(pb.id)}">✏️</button>
+                        <button class="btn btn-sm btn-danger" data-delete-pollen="${escapeHtml(pb.id)}">🗑</button>
+                      </div>
+                    </div>
+                    <div class="meta-row" style="margin-top:12px;">
+                      ${pb.donor_plant_name ? `<span>🪴 ${escapeHtml(pb.donor_plant_name)}</span>` : ""}
+                      ${pb.donor_strain ? `<span>🌱 ${escapeHtml(pb.donor_strain)}</span>` : ""}
+                      <span>📅 ${formatDate(pb.collected_at)}</span>
+                    </div>
+                    ${
+                      pb.storage_method || pb.storage_location
+                        ? `<div class="log-chips">
+                            ${pb.storage_method ? `<span class="log-chip">❄️ ${escapeHtml(pb.storage_method)}</span>` : ""}
+                            ${pb.storage_location ? `<span class="log-chip">📍 ${escapeHtml(pb.storage_location)}</span>` : ""}
+                          </div>`
+                        : ""
+                    }
+                    ${pb.notes ? `<p class="log-notes">${escapeHtml(pb.notes)}</p>` : ""}
+                  </div>
+                </div>
+              `;
+            })
+            .join("")}</div>`
+        : `<div class="empty-state">
+            <div class="empty-state-emoji">🌼</div>
+            <h3>Pollen Vault is empty</h3>
+            <p>Store male or STS/Colloidal Silver reversed pollen batches with collection dates, freezer locations, and viability status.</p>
+            <button class="btn btn-primary" id="btn-empty-pollen">+ Store First Pollen Batch</button>
+          </div>`;
+    } else if (this._breedingSubTab === "seeds") {
+      bodyHtml = seeds.length
+        ? `<div class="grid-cards">${seeds
+            .map(
+              (sb) => `
+            <div class="card">
+              <div class="card-body">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+                  <div>
+                    <h3 class="plant-title" style="margin:0;">🌰 ${escapeHtml(sb.name)}</h3>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
+                      ${sb.generation ? `<span class="badge badge-info">${escapeHtml(sb.generation)}</span>` : ""}
+                      <span class="badge ${sb.seed_type === "feminized" ? "badge-ok" : "badge-muted"}">${escapeHtml(sb.seed_type)}</span>
+                      <span class="badge badge-warn">${sb.seed_count} seeds</span>
+                    </div>
+                  </div>
+                  <button class="btn btn-sm btn-danger" data-delete-seed-batch="${escapeHtml(sb.id)}">🗑</button>
+                </div>
+                ${sb.lineage_summary ? `<div style="font-size:13px;font-weight:600;margin-top:10px;">🧬 ${escapeHtml(sb.lineage_summary)}</div>` : ""}
+                <div class="meta-row" style="margin-top:8px;margin-bottom:0;">
+                  ${sb.breeder ? `<span>🏷 ${escapeHtml(sb.breeder)}</span>` : ""}
+                  ${sb.harvested_at ? `<span>📅 ${formatDate(sb.harvested_at)}</span>` : ""}
+                  ${sb.storage_location ? `<span>📍 ${escapeHtml(sb.storage_location)}</span>` : ""}
+                </div>
+                ${sb.notes ? `<p class="log-notes">${escapeHtml(sb.notes)}</p>` : ""}
+              </div>
+            </div>
+          `
+            )
+            .join("")}</div>`
+        : `<div class="empty-state">
+            <div class="empty-state-emoji">🌰</div>
+            <h3>No minted seed batches yet</h3>
+            <p>Harvest mature seeds from any Breeding Cross to automatically mint a Seedbank batch with full pedigree lineage.</p>
+          </div>`;
+    }
+
+    return `
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div>
+            <div class="kpi-label">Breeding Crosses</div>
+            <div class="kpi-value">${crosses.length}</div>
+          </div>
+          <span class="kpi-emoji">🧬</span>
+        </div>
+        <div class="kpi-card">
+          <div>
+            <div class="kpi-label">Pheno Hunts</div>
+            <div class="kpi-value">${hunts.length}</div>
+          </div>
+          <span class="kpi-emoji">🔍</span>
+        </div>
+        <div class="kpi-card">
+          <div>
+            <div class="kpi-label">Pollen Vault</div>
+            <div class="kpi-value">${pollen.length}</div>
+          </div>
+          <span class="kpi-emoji">🌼</span>
+        </div>
+        <div class="kpi-card">
+          <div>
+            <div class="kpi-label">Minted Seed Batches</div>
+            <div class="kpi-value">${seeds.length}</div>
+          </div>
+          <span class="kpi-emoji">🌰</span>
+        </div>
+      </div>
+
+      <div class="section-header">
+        <div class="nav-tabs">
+          <button class="nav-tab ${this._breedingSubTab === "crosses" ? "active" : ""}" data-breeding-subtab="crosses">🧬 Crosses (${crosses.length})</button>
+          <button class="nav-tab ${this._breedingSubTab === "phenos" ? "active" : ""}" data-breeding-subtab="phenos">🔍 Pheno Hunts (${hunts.length})</button>
+          <button class="nav-tab ${this._breedingSubTab === "pollen" ? "active" : ""}" data-breeding-subtab="pollen">🌼 Pollen Vault (${pollen.length})</button>
+          <button class="nav-tab ${this._breedingSubTab === "seeds" ? "active" : ""}" data-breeding-subtab="seeds">🌰 Minted Seeds (${seeds.length})</button>
+        </div>
+        ${headerAction}
+      </div>
+      ${bodyHtml}
+    `;
+  }
+
   _renderArchive() {
     const s = this._state.summary || {};
     const cycles = this._state.grow_cycles || [];
@@ -1994,6 +2367,194 @@ class IGroPanel extends HTMLElement {
       });
     });
 
+    // Breeding Program, Pollen Vault & Pheno-Hunt actions
+    root.querySelectorAll("[data-breeding-subtab]").forEach((el) => {
+      el.addEventListener("click", () => {
+        this._breedingSubTab = el.dataset.breedingSubtab;
+        this._render();
+      });
+    });
+
+    const openNewPollen = () => {
+      this._modal = { type: "pollen", data: null };
+      this._render();
+    };
+    const openNewCross = () => {
+      this._modal = { type: "cross", data: null };
+      this._render();
+    };
+    const openNewPhenoHunt = () => {
+      this._modal = { type: "pheno_hunt", data: null };
+      this._render();
+    };
+    root.getElementById("btn-add-pollen")?.addEventListener("click", openNewPollen);
+    root.getElementById("btn-empty-pollen")?.addEventListener("click", openNewPollen);
+    root.getElementById("btn-add-cross")?.addEventListener("click", openNewCross);
+    root.getElementById("btn-empty-cross")?.addEventListener("click", openNewCross);
+    root.getElementById("btn-add-pheno-hunt")?.addEventListener("click", openNewPhenoHunt);
+    root.getElementById("btn-empty-pheno-hunt")?.addEventListener("click", openNewPhenoHunt);
+
+    root.querySelectorAll("[data-edit-pollen]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const pb = (this._state.pollen_batches || []).find((p) => p.id === el.dataset.editPollen);
+        if (pb) {
+          this._modal = { type: "pollen", data: pb };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-delete-pollen]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const pb = (this._state.pollen_batches || []).find((p) => p.id === el.dataset.deletePollen);
+        if (!pb) return;
+        this._openConfirm({
+          title: "🗑 Delete Pollen Batch",
+          message: `Delete pollen batch "${pb.name}" from the vault?`,
+          confirmLabel: "Delete Pollen",
+          onConfirm: async () => {
+            await this._api.deletePollenBatch(pb.id);
+            await this._refreshState();
+            this._showToast(`Deleted "${pb.name}"`);
+          },
+        });
+      });
+    });
+
+    root.querySelectorAll("[data-edit-cross]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const cr = (this._state.breeding_crosses || []).find((c) => c.id === el.dataset.editCross);
+        if (cr) {
+          this._modal = { type: "cross", data: cr };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-delete-cross]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const cr = (this._state.breeding_crosses || []).find((c) => c.id === el.dataset.deleteCross);
+        if (!cr) return;
+        this._openConfirm({
+          title: "🗑 Delete Breeding Cross",
+          message: `Delete breeding cross "${cr.name}"?`,
+          confirmLabel: "Delete Cross",
+          onConfirm: async () => {
+            await this._api.deleteBreedingCross(cr.id);
+            await this._refreshState();
+            this._showToast(`Deleted "${cr.name}"`);
+          },
+        });
+      });
+    });
+
+    root.querySelectorAll("[data-harvest-seeds]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const cr = (this._state.breeding_crosses || []).find((c) => c.id === el.dataset.harvestSeeds);
+        if (cr) {
+          this._modal = { type: "harvest_seeds", data: cr };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-view-pedigree]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const cr = (this._state.breeding_crosses || []).find((c) => c.id === el.dataset.viewPedigree);
+        if (cr) {
+          this._modal = { type: "pedigree", data: cr };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-delete-seed-batch]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const sb = (this._state.seed_batches || []).find((s) => s.id === el.dataset.deleteSeedBatch);
+        if (!sb) return;
+        this._openConfirm({
+          title: "🗑 Delete Seed Batch",
+          message: `Delete minted seed batch "${sb.name}"?`,
+          confirmLabel: "Delete Seeds",
+          onConfirm: async () => {
+            await this._api.deleteSeedBatch(sb.id);
+            await this._refreshState();
+            this._showToast(`Deleted "${sb.name}"`);
+          },
+        });
+      });
+    });
+
+    root.getElementById("select-pheno-hunt")?.addEventListener("change", (e) => {
+      this._selectedPhenoHuntId = e.target.value;
+      this._render();
+    });
+
+    root.querySelectorAll("[data-edit-pheno-hunt]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const hunt = (this._state.pheno_hunts || []).find((h) => h.id === el.dataset.editPhenoHunt);
+        if (hunt) {
+          this._modal = { type: "pheno_hunt", data: hunt };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-delete-pheno-hunt]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const hunt = (this._state.pheno_hunts || []).find((h) => h.id === el.dataset.deletePhenoHunt);
+        if (!hunt) return;
+        this._openConfirm({
+          title: "🗑 Delete Pheno Hunt",
+          message: `Delete pheno hunt "${hunt.name}" and all of its trait scorecards?`,
+          confirmLabel: "Delete Hunt",
+          onConfirm: async () => {
+            await this._api.deletePhenoHunt(hunt.id);
+            this._selectedPhenoHuntId = null;
+            await this._refreshState();
+            this._showToast(`Deleted "${hunt.name}"`);
+          },
+        });
+      });
+    });
+
+    root.querySelectorAll("[data-add-pheno-score]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const hunt = (this._state.pheno_hunts || []).find((h) => h.id === el.dataset.addPhenoScore);
+        if (hunt) {
+          this._modal = { type: "pheno_score", data: { hunt, score: null } };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-edit-pheno-score]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const hunt = (this._state.pheno_hunts || []).find((h) => h.id === el.dataset.huntId);
+        const score = (hunt?.scores || []).find((s) => s.id === el.dataset.editPhenoScore);
+        if (hunt && score) {
+          this._modal = { type: "pheno_score", data: { hunt, score } };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-delete-pheno-score]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const scoreId = el.dataset.deletePhenoScore;
+        this._openConfirm({
+          title: "Remove Plant from Pheno Hunt",
+          message: "Remove this plant's phenotype scorecard from the hunt?",
+          confirmLabel: "Remove Scorecard",
+          onConfirm: async () => {
+            await this._api.deletePhenoScore(scoreId);
+            await this._refreshState();
+            this._showToast("Phenotype scorecard removed");
+          },
+        });
+      });
+    });
+
     // Modal backdrop / close
     root.querySelectorAll("[data-close-modal]").forEach((el) => {
       el.addEventListener("click", (e) => {
@@ -2532,6 +3093,141 @@ class IGroPanel extends HTMLElement {
         }
         this._modal = null;
         await this._refreshState();
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Pollen Vault form submit
+    root.getElementById("pollen-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const data = Object.fromEntries(fd.entries());
+      for (const k of Object.keys(data)) {
+        if (data[k] === "") data[k] = null;
+      }
+      try {
+        if (this._modal.data?.id) {
+          await this._api.updatePollenBatch(this._modal.data.id, data);
+          this._showToast("Pollen batch updated!");
+        } else {
+          await this._api.createPollenBatch(data);
+          this._showToast("Pollen stored in vault!");
+        }
+        this._modal = null;
+        await this._refreshState();
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Breeding Cross form submit
+    root.getElementById("cross-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const data = Object.fromEntries(fd.entries());
+      for (const k of Object.keys(data)) {
+        if (data[k] === "") data[k] = null;
+      }
+      try {
+        if (this._modal.data?.id) {
+          await this._api.updateBreedingCross(this._modal.data.id, data);
+          this._showToast("Breeding cross updated!");
+        } else {
+          await this._api.createBreedingCross(data);
+          this._showToast("Breeding cross created!");
+        }
+        this._modal = null;
+        await this._refreshState();
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Harvest Seeds & Auto-Mint form submit
+    root.getElementById("harvest-seeds-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const cross = this._modal.data;
+      const countRaw = fd.get("seed_count");
+      const data = {
+        harvested_at: fd.get("harvested_at") || null,
+        seed_count: countRaw !== null && countRaw !== "" ? parseInt(countRaw, 10) : 0,
+        batch_name: (fd.get("batch_name") || "").trim() || cross.name,
+        seed_type: fd.get("seed_type") || "regular",
+        breeder: fd.get("breeder") || null,
+        storage_location: fd.get("storage_location") || null,
+        mint_seedbank: fd.get("mint_seedbank") !== null,
+        notes: fd.get("notes") || null,
+      };
+      try {
+        const res = await this._api.harvestCrossSeeds(cross.id, data);
+        this._modal = null;
+        await this._refreshState();
+        this._showToast(
+          res?.seed_batch
+            ? `Harvested ${data.seed_count} seeds & minted Seedbank batch!`
+            : "Seed harvest recorded!"
+        );
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Pheno Hunt form submit
+    root.getElementById("pheno-hunt-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const data = Object.fromEntries(fd.entries());
+      for (const k of Object.keys(data)) {
+        if (data[k] === "") data[k] = null;
+      }
+      try {
+        if (this._modal.data?.id) {
+          await this._api.updatePhenoHunt(this._modal.data.id, data);
+          this._showToast("Pheno hunt updated!");
+        } else {
+          const res = await this._api.createPhenoHunt(data);
+          if (res?.pheno_hunt?.id) this._selectedPhenoHuntId = res.pheno_hunt.id;
+          this._showToast("Pheno hunt created!");
+        }
+        this._modal = null;
+        await this._refreshState();
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Pheno Score form submit
+    root.getElementById("pheno-score-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const { hunt } = this._modal.data;
+      const plantId = fd.get("plant_id");
+      if (!plantId) {
+        this._showToast("Please select a plant first", true);
+        return;
+      }
+      const data = {
+        pheno_code: (fd.get("pheno_code") || "").trim() || null,
+        status: fd.get("status") || "evaluating",
+        internode_spacing: fd.get("internode_spacing") || null,
+        terpene_notes: fd.get("terpene_notes") || null,
+        notes: fd.get("notes") || null,
+      };
+      for (const intF of ["vigor", "resin_density", "pest_mold_resistance", "aroma_score", "flower_days"]) {
+        const v = fd.get(intF);
+        data[intF] = v !== null && v !== "" ? parseInt(v, 10) : null;
+      }
+      for (const flF of ["stretch_factor", "yield_g"]) {
+        const v = fd.get(flF);
+        data[flF] = v !== null && v !== "" ? parseFloat(v) : null;
+      }
+      try {
+        await this._api.upsertPhenoScore(hunt.id, plantId, data);
+        this._modal = null;
+        await this._refreshState();
+        this._showToast("Phenotype scorecard saved!");
       } catch (err) {
         this._showToast(`Error: ${err.message || err}`, true);
       }

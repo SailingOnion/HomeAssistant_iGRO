@@ -14,6 +14,7 @@ from .calculations import (
     is_timestamp_near_now,
 )
 from .const import (
+    BREEDING_GENERATIONS,
     DOMAIN,
     ENVIRONMENT_TYPES,
     EVENT_HARVEST_RECORDED,
@@ -22,7 +23,10 @@ from .const import (
     GROW_MEDIUMS,
     GROW_STAGES,
     LOG_TYPES,
+    PHENO_STATUSES,
     PLANT_TYPES,
+    POLLEN_DONOR_TYPES,
+    POLLEN_VIABILITIES,
     STAGE_LABELS,
     STAGE_VPD_TARGETS,
 )
@@ -82,6 +86,19 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_update_reminder,
         ws_complete_reminder,
         ws_delete_reminder,
+        ws_create_pollen_batch,
+        ws_update_pollen_batch,
+        ws_delete_pollen_batch,
+        ws_create_breeding_cross,
+        ws_update_breeding_cross,
+        ws_harvest_cross_seeds,
+        ws_delete_breeding_cross,
+        ws_delete_seed_batch,
+        ws_create_pheno_hunt,
+        ws_update_pheno_hunt,
+        ws_delete_pheno_hunt,
+        ws_upsert_pheno_score,
+        ws_delete_pheno_score,
     ]
     for cmd in commands:
         websocket_api.async_register_command(hass, cmd)
@@ -117,6 +134,10 @@ async def ws_get_state(
             "grow_cycles": data.get("grow_cycles", []),
             "harvests": data.get("harvests", []),
             "reminders": data.get("reminders", []),
+            "pollen_batches": data.get("pollen_batches", []),
+            "breeding_crosses": data.get("breeding_crosses", []),
+            "seed_batches": data.get("seed_batches", []),
+            "pheno_hunts": data.get("pheno_hunts", []),
             "summary": data.get("summary", {}),
             "meta": {
                 "stages": GROW_STAGES,
@@ -129,6 +150,10 @@ async def ws_get_state(
                 "mediums": GROW_MEDIUMS,
                 "environment_types": ENVIRONMENT_TYPES,
                 "log_types": LOG_TYPES,
+                "breeding_generations": BREEDING_GENERATIONS,
+                "pollen_donor_types": POLLEN_DONOR_TYPES,
+                "pollen_viabilities": POLLEN_VIABILITIES,
+                "pheno_statuses": PHENO_STATUSES,
                 "temperature_unit": hass.config.units.temperature_unit,
             },
         },
@@ -1371,5 +1396,322 @@ async def ws_delete_reminder(
         connection.send_error(msg["id"], "not_ready", "iGro not initialized")
         return
     deleted = await coordinator.db.async_delete_reminder(msg["reminder_id"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"deleted": deleted})
+
+
+# ------------------------------------------------------------------
+# Breeding Program, Pollen Vault, Seed Minting & Pheno-Hunt WS commands
+# ------------------------------------------------------------------
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/pollen/create",
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_create_pollen_batch(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Create a stored pollen batch."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    created = await coordinator.db.async_create_pollen_batch(msg["data"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"pollen_batch": created})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/pollen/update",
+        vol.Required("batch_id"): str,
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_update_pollen_batch(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update a pollen batch."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    updated = await coordinator.db.async_update_pollen_batch(
+        msg["batch_id"], msg["data"]
+    )
+    if updated is None:
+        connection.send_error(msg["id"], "not_found", "Pollen batch not found")
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"pollen_batch": updated})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/pollen/delete",
+        vol.Required("batch_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_pollen_batch(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete a pollen batch."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    deleted = await coordinator.db.async_delete_pollen_batch(msg["batch_id"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"deleted": deleted})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/crosses/create",
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_create_breeding_cross(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Create a breeding cross / pollination project."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    created = await coordinator.db.async_create_breeding_cross(msg["data"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"cross": created})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/crosses/update",
+        vol.Required("cross_id"): str,
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_update_breeding_cross(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update a breeding cross."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    updated = await coordinator.db.async_update_breeding_cross(
+        msg["cross_id"], msg["data"]
+    )
+    if updated is None:
+        connection.send_error(msg["id"], "not_found", "Breeding cross not found")
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"cross": updated})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/crosses/harvest_seeds",
+        vol.Required("cross_id"): str,
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_harvest_cross_seeds(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Harvest seeds from a cross and auto-mint a Seedbank batch."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    result = await coordinator.db.async_harvest_cross_seeds(
+        msg["cross_id"], msg["data"]
+    )
+    if result is None:
+        connection.send_error(msg["id"], "not_found", "Breeding cross not found")
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/crosses/delete",
+        vol.Required("cross_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_breeding_cross(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete a breeding cross."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    deleted = await coordinator.db.async_delete_breeding_cross(msg["cross_id"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"deleted": deleted})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/seed_batches/delete",
+        vol.Required("batch_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_seed_batch(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete a minted seed batch."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    deleted = await coordinator.db.async_delete_seed_batch(msg["batch_id"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"deleted": deleted})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/pheno_hunts/create",
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_create_pheno_hunt(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Create a pheno-hunt session."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    created = await coordinator.db.async_create_pheno_hunt(msg["data"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"pheno_hunt": created})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/pheno_hunts/update",
+        vol.Required("hunt_id"): str,
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_update_pheno_hunt(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update a pheno-hunt session."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    updated = await coordinator.db.async_update_pheno_hunt(
+        msg["hunt_id"], msg["data"]
+    )
+    if updated is None:
+        connection.send_error(msg["id"], "not_found", "Pheno hunt not found")
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"pheno_hunt": updated})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/pheno_hunts/delete",
+        vol.Required("hunt_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_pheno_hunt(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete a pheno-hunt session."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    deleted = await coordinator.db.async_delete_pheno_hunt(msg["hunt_id"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"deleted": deleted})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/pheno_scores/upsert",
+        vol.Required("pheno_hunt_id"): str,
+        vol.Required("plant_id"): str,
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_upsert_pheno_score(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Create or update a sibling phenotype trait scorecard."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    score = await coordinator.db.async_upsert_pheno_score(
+        msg["pheno_hunt_id"], msg["plant_id"], msg["data"]
+    )
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"score": score})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/pheno_scores/delete",
+        vol.Required("score_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_pheno_score(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete a phenotype scorecard."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    deleted = await coordinator.db.async_delete_pheno_score(msg["score_id"])
     await coordinator.async_request_refresh()
     connection.send_result(msg["id"], {"deleted": deleted})
