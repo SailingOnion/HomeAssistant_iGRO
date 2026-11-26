@@ -16,10 +16,13 @@ from .calculations import (
 from .const import (
     BREEDING_GENERATIONS,
     DOMAIN,
+    DOSING_CHANNEL_ROLES,
     ENVIRONMENT_TYPES,
     EVENT_HARVEST_RECORDED,
     EVENT_LOG_CREATED,
     EVENT_STAGE_CHANGED,
+    FERTIGATION_MODES,
+    FERTIGATION_SCHEDULE_TYPES,
     GROW_MEDIUMS,
     GROW_STAGES,
     LOG_TYPES,
@@ -99,6 +102,21 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_delete_pheno_hunt,
         ws_upsert_pheno_score,
         ws_delete_pheno_score,
+        ws_create_reservoir,
+        ws_update_reservoir,
+        ws_delete_reservoir,
+        ws_mix_reservoir_batch,
+        ws_auto_trim_reservoir,
+        ws_emergency_stop,
+        ws_clear_reservoir_lockout,
+        ws_create_dosing_channel,
+        ws_update_dosing_channel,
+        ws_delete_dosing_channel,
+        ws_dose_channel,
+        ws_refill_channel,
+        ws_upsert_fertigation_schedule,
+        ws_delete_fertigation_schedule,
+        ws_run_fertigation_shot,
     ]
     for cmd in commands:
         websocket_api.async_register_command(hass, cmd)
@@ -138,6 +156,13 @@ async def ws_get_state(
             "breeding_crosses": data.get("breeding_crosses", []),
             "seed_batches": data.get("seed_batches", []),
             "pheno_hunts": data.get("pheno_hunts", []),
+            "reservoirs": list(data.get("reservoirs", {}).values()),
+            "dosing_channels": data.get("dosing_channels", []),
+            "dosing_runs": data.get("dosing_runs", []),
+            "fertigation_schedules": list(
+                data.get("fertigation_schedules", {}).values()
+            ),
+            "fertigation_events": data.get("fertigation_events", []),
             "summary": data.get("summary", {}),
             "meta": {
                 "stages": GROW_STAGES,
@@ -154,6 +179,9 @@ async def ws_get_state(
                 "pollen_donor_types": POLLEN_DONOR_TYPES,
                 "pollen_viabilities": POLLEN_VIABILITIES,
                 "pheno_statuses": PHENO_STATUSES,
+                "fertigation_modes": FERTIGATION_MODES,
+                "fertigation_schedule_types": FERTIGATION_SCHEDULE_TYPES,
+                "dosing_channel_roles": DOSING_CHANNEL_ROLES,
                 "temperature_unit": hass.config.units.temperature_unit,
             },
         },
@@ -174,6 +202,9 @@ def ws_list_ha_entities(
     co2: list[dict[str, str]] = []
     controls: list[dict[str, str]] = []
     cameras: list[dict[str, str]] = []
+    sensors: list[dict[str, str]] = []
+    binary_sensors: list[dict[str, str]] = []
+    numbers: list[dict[str, str]] = []
 
     for state in sorted(hass.states.async_all(), key=lambda s: s.entity_id):
         eid = state.entity_id
@@ -190,9 +221,22 @@ def ws_list_ha_entities(
 
         if domain == "camera":
             cameras.append(item)
-        elif domain in ("light", "switch", "fan", "humidifier", "climate", "input_boolean"):
+        elif domain in (
+            "light",
+            "switch",
+            "valve",
+            "fan",
+            "humidifier",
+            "climate",
+            "input_boolean",
+        ):
             controls.append(item)
+        elif domain == "binary_sensor":
+            binary_sensors.append(item)
+        elif domain in ("number", "input_number"):
+            numbers.append(item)
         elif domain == "sensor":
+            sensors.append(item)
             if dc == "temperature" or unit in ("°c", "°f", "c", "f"):
                 temperature.append(item)
             if dc == "humidity" or "humidity" in eid or (unit == "%" and dc != "battery"):
@@ -211,6 +255,9 @@ def ws_list_ha_entities(
             "co2": co2,
             "controls": controls,
             "cameras": cameras,
+            "sensors": sensors,
+            "binary_sensors": binary_sensors,
+            "numbers": numbers,
         },
     )
 
@@ -1715,3 +1762,404 @@ async def ws_delete_pheno_score(
     deleted = await coordinator.db.async_delete_pheno_score(msg["score_id"])
     await coordinator.async_request_refresh()
     connection.send_result(msg["id"], {"deleted": deleted})
+
+
+# ------------------------------------------------------------------
+# Reservoirs, Dosing Pumps & High-Frequency Fertigation WS commands
+# ------------------------------------------------------------------
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/reservoirs/create",
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_create_reservoir(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Create a nutrient reservoir."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    created = await coordinator.db.async_create_reservoir(msg["data"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"reservoir": created})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/reservoirs/update",
+        vol.Required("reservoir_id"): str,
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_update_reservoir(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update a nutrient reservoir."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    updated = await coordinator.db.async_update_reservoir(
+        msg["reservoir_id"], msg["data"]
+    )
+    if updated is None:
+        connection.send_error(msg["id"], "not_found", "Reservoir not found")
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"reservoir": updated})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/reservoirs/delete",
+        vol.Required("reservoir_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_reservoir(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete a nutrient reservoir."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    deleted = await coordinator.db.async_delete_reservoir(msg["reservoir_id"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"deleted": deleted})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/reservoirs/mix_batch",
+        vol.Required("reservoir_id"): str,
+        vol.Required("preset_id"): str,
+        vol.Required("target_volume_l"): vol.Coerce(float),
+    }
+)
+@websocket_api.async_response
+async def ws_mix_reservoir_batch(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Run an ordered batch mix from a Nutrient Preset into a reservoir."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    try:
+        result = await coordinator.fertigation.async_run_batch_mix(
+            msg["reservoir_id"], msg["preset_id"], float(msg["target_volume_l"])
+        )
+    except Exception as err:
+        connection.send_error(msg["id"], "mix_failed", str(err))
+        return
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/reservoirs/auto_trim",
+        vol.Required("reservoir_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_auto_trim_reservoir(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Trigger one closed-loop pH/EC trim cycle on a reservoir."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    try:
+        result = await coordinator.fertigation.async_run_auto_trim(msg["reservoir_id"])
+    except Exception as err:
+        connection.send_error(msg["id"], "trim_failed", str(err))
+        return
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/reservoirs/emergency_stop",
+        vol.Optional("reason"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+async def ws_emergency_stop(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Trigger emergency stop across all pumps, valves, and dosing channels."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    result = await coordinator.fertigation.async_emergency_stop(
+        msg.get("reason") or "Manual emergency stop from iGro panel"
+    )
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/reservoirs/clear_lockout",
+        vol.Required("reservoir_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_clear_reservoir_lockout(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Reset a reservoir from locked_out/emergency_stop back to idle."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    updated = await coordinator.db.async_update_reservoir(
+        msg["reservoir_id"], {"status": "idle", "last_error": None}
+    )
+    if updated is None:
+        connection.send_error(msg["id"], "not_found", "Reservoir not found")
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"reservoir": updated})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/dosing_channels/create",
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_create_dosing_channel(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Create a peristaltic dosing channel."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    created = await coordinator.db.async_create_dosing_channel(msg["data"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"channel": created})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/dosing_channels/update",
+        vol.Required("channel_id"): str,
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_update_dosing_channel(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update a peristaltic dosing channel (including calibration mL/s)."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    updated = await coordinator.db.async_update_dosing_channel(
+        msg["channel_id"], msg["data"]
+    )
+    if updated is None:
+        connection.send_error(msg["id"], "not_found", "Dosing channel not found")
+        return
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"channel": updated})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/dosing_channels/delete",
+        vol.Required("channel_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_dosing_channel(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete a dosing channel."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    deleted = await coordinator.db.async_delete_dosing_channel(msg["channel_id"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"deleted": deleted})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/dosing_channels/dose",
+        vol.Required("channel_id"): str,
+        vol.Required("dose_ml"): vol.Coerce(float),
+        vol.Optional("run_type", default="manual_dose"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_dose_channel(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Dose or prime a single peristaltic channel."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    try:
+        result = await coordinator.fertigation.async_dose_channel(
+            msg["channel_id"],
+            float(msg["dose_ml"]),
+            run_type=msg.get("run_type", "manual_dose"),
+            check_caps=msg.get("run_type") != "prime",
+        )
+    except Exception as err:
+        connection.send_error(msg["id"], "dose_failed", str(err))
+        return
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/dosing_channels/refill",
+        vol.Required("channel_id"): str,
+        vol.Optional("remaining_ml"): vol.Any(vol.Coerce(float), None),
+    }
+)
+@websocket_api.async_response
+async def ws_refill_channel(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Refill a dosing channel's bottle back to full (or specified mL)."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    ch = next(
+        (
+            c
+            for c in (coordinator.data or {}).get("dosing_channels", [])
+            if c["id"] == msg["channel_id"]
+        ),
+        None,
+    )
+    if ch is None:
+        connection.send_error(msg["id"], "not_found", "Dosing channel not found")
+        return
+    target = (
+        float(msg["remaining_ml"])
+        if msg.get("remaining_ml") is not None
+        else float(ch.get("bottle_capacity_ml") or 1000.0)
+    )
+    updated = await coordinator.db.async_update_dosing_channel(
+        msg["channel_id"], {"bottle_remaining_ml": target}
+    )
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"channel": updated})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/fertigation/upsert",
+        vol.Required("plant_id"): str,
+        vol.Required("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_upsert_fertigation_schedule(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Create or update a plant's fertigation schedule."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    sched = await coordinator.db.async_upsert_fertigation_schedule(
+        msg["plant_id"], msg["data"]
+    )
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"schedule": sched})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/fertigation/delete",
+        vol.Required("plant_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_fertigation_schedule(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete a plant's fertigation schedule."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    deleted = await coordinator.db.async_delete_fertigation_schedule(msg["plant_id"])
+    await coordinator.async_request_refresh()
+    connection.send_result(msg["id"], {"deleted": deleted})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/fertigation/run_shot",
+        vol.Required("plant_id"): str,
+        vol.Optional("duration_s"): vol.Any(vol.Coerce(float), None),
+    }
+)
+@websocket_api.async_response
+async def ws_run_fertigation_shot(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Execute an immediate manual fertigation shot for a plant."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    try:
+        result = await coordinator.fertigation.async_run_fertigation_shot(
+            msg["plant_id"],
+            trigger_type="manual",
+            duration_s=msg.get("duration_s"),
+        )
+    except Exception as err:
+        connection.send_error(msg["id"], "fertigation_failed", str(err))
+        return
+    connection.send_result(msg["id"], result)

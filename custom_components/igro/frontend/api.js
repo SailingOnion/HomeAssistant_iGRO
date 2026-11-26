@@ -46,6 +46,23 @@ export const BREEDING_GENERATIONS = [
   "F1", "F2", "F3", "F4", "S1", "BX1", "BX2", "IX", "Polyhybrid", "Landrace", "Other",
 ];
 
+export const DOSING_ROLE_META = {
+  silica:   { label: "Silica",     icon: "🪨", order: 10 },
+  cal_mag:  { label: "Cal-Mag",    icon: "🦴", order: 20 },
+  base_a:   { label: "Base A",     icon: "🧪", order: 30 },
+  base_b:   { label: "Base B",     icon: "🧫", order: 40 },
+  bloom_pk: { label: "Bloom / PK", icon: "🌸", order: 50 },
+  additive: { label: "Additive",   icon: "✨", order: 60 },
+  ph_down:  { label: "pH Down",    icon: "🔻", order: 90 },
+  ph_up:    { label: "pH Up",      icon: "🔺", order: 95 },
+};
+
+export const FERTIGATION_MODE_META = {
+  off:                { label: "Off",                icon: "⏸", cls: "badge-muted" },
+  scheduled:          { label: "Scheduled",          icon: "⏱", cls: "badge-ok" },
+  moisture_triggered: { label: "Moisture Triggered", icon: "💧", cls: "badge-info" },
+};
+
 export const REMINDER_ACTION_META = {
   water:        { label: "Water",        icon: "💧", color: "#0ea5e9" },
   feed:         { label: "Feed",         icon: "🧪", color: "#10b981" },
@@ -471,6 +488,82 @@ export class IGroApi {
 
   async deletePhenoScore(score_id) {
     return this.hass.callWS({ type: "igro/pheno_scores/delete", score_id });
+  }
+
+  async createReservoir(data) {
+    return this.hass.callWS({ type: "igro/reservoirs/create", data });
+  }
+
+  async updateReservoir(reservoir_id, data) {
+    return this.hass.callWS({ type: "igro/reservoirs/update", reservoir_id, data });
+  }
+
+  async deleteReservoir(reservoir_id) {
+    return this.hass.callWS({ type: "igro/reservoirs/delete", reservoir_id });
+  }
+
+  async mixReservoirBatch(reservoir_id, preset_id, target_volume_l) {
+    return this.hass.callWS({
+      type: "igro/reservoirs/mix_batch",
+      reservoir_id,
+      preset_id,
+      target_volume_l,
+    });
+  }
+
+  async autoTrimReservoir(reservoir_id) {
+    return this.hass.callWS({ type: "igro/reservoirs/auto_trim", reservoir_id });
+  }
+
+  async emergencyStop(reason = null) {
+    return this.hass.callWS({ type: "igro/reservoirs/emergency_stop", reason });
+  }
+
+  async clearReservoirLockout(reservoir_id) {
+    return this.hass.callWS({ type: "igro/reservoirs/clear_lockout", reservoir_id });
+  }
+
+  async createDosingChannel(data) {
+    return this.hass.callWS({ type: "igro/dosing_channels/create", data });
+  }
+
+  async updateDosingChannel(channel_id, data) {
+    return this.hass.callWS({ type: "igro/dosing_channels/update", channel_id, data });
+  }
+
+  async deleteDosingChannel(channel_id) {
+    return this.hass.callWS({ type: "igro/dosing_channels/delete", channel_id });
+  }
+
+  async doseChannel(channel_id, dose_ml, run_type = "manual_dose") {
+    return this.hass.callWS({
+      type: "igro/dosing_channels/dose",
+      channel_id,
+      dose_ml,
+      run_type,
+    });
+  }
+
+  async refillChannel(channel_id, remaining_ml = null) {
+    return this.hass.callWS({
+      type: "igro/dosing_channels/refill",
+      channel_id,
+      remaining_ml,
+    });
+  }
+
+  async upsertFertigationSchedule(plant_id, data) {
+    return this.hass.callWS({ type: "igro/fertigation/upsert", plant_id, data });
+  }
+
+  async deleteFertigationSchedule(plant_id) {
+    return this.hass.callWS({ type: "igro/fertigation/delete", plant_id });
+  }
+
+  async runFertigationShot(plant_id, duration_s = null) {
+    const payload = { type: "igro/fertigation/run_shot", plant_id };
+    if (duration_s !== null) payload.duration_s = duration_s;
+    return this.hass.callWS(payload);
   }
 
   async uploadPhoto(formData) {

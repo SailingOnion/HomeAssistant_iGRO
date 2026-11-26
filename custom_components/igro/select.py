@@ -9,7 +9,13 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, EVENT_STAGE_CHANGED, GROW_STAGES, SIGNAL_ENTITIES_CHANGED
+from .const import (
+    DOMAIN,
+    EVENT_STAGE_CHANGED,
+    FERTIGATION_MODES,
+    GROW_STAGES,
+    SIGNAL_ENTITIES_CHANGED,
+)
 from .coordinator import IGroCoordinator
 from .entity import IGroPlantEntity
 
@@ -42,12 +48,39 @@ class IGroPlantStageSelect(IGroPlantEntity, SelectEntity):
         await self.coordinator.async_request_refresh()
 
 
+class IGroPlantFertigationModeSelect(IGroPlantEntity, SelectEntity):
+    """Select entity to switch a plant's fertigation mode (off / scheduled / moisture_triggered)."""
+
+    _attr_name = "Fertigation Mode"
+    _attr_icon = "mdi:water-sync"
+    _attr_options = list(FERTIGATION_MODES)
+
+    def __init__(self, coordinator: IGroCoordinator, plant_id: str) -> None:
+        super().__init__(coordinator, plant_id)
+        self._attr_unique_id = f"{DOMAIN}_plant_{plant_id}_fertigation_mode"
+
+    @property
+    def current_option(self) -> str | None:
+        plant = self._plant
+        if plant is None:
+            return None
+        sched = plant.get("fertigation") or {}
+        return sched.get("mode") or "off"
+
+    async def async_select_option(self, option: str) -> None:
+        """Update the plant's fertigation mode."""
+        await self.coordinator.db.async_upsert_fertigation_schedule(
+            self._plant_id, {"mode": option}
+        )
+        await self.coordinator.async_request_refresh()
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up iGro stage select entities dynamically."""
+    """Set up iGro select entities dynamically."""
     coordinator: IGroCoordinator = hass.data[DOMAIN]["coordinator"]
     tracked_plants: set[str] = set()
 
@@ -56,11 +89,11 @@ async def async_setup_entry(
         data = coordinator.data or {}
         current_plants = set(data.get("plants", {}).keys())
 
-        new_entities = [
-            IGroPlantStageSelect(coordinator, pid)
-            for pid in current_plants - tracked_plants
-        ]
-        tracked_plants.update(current_plants - tracked_plants)
+        new_entities: list[SelectEntity] = []
+        for pid in current_plants - tracked_plants:
+            new_entities.append(IGroPlantStageSelect(coordinator, pid))
+            new_entities.append(IGroPlantFertigationModeSelect(coordinator, pid))
+            tracked_plants.add(pid)
         if new_entities:
             async_add_entities(new_entities)
 
@@ -69,9 +102,10 @@ async def async_setup_entry(
             ent_reg = er.async_get(hass)
             for pid in removed:
                 tracked_plants.discard(pid)
-                uid = f"{DOMAIN}_plant_{pid}_stage_select"
-                if ent_id := ent_reg.async_get_entity_id("select", DOMAIN, uid):
-                    ent_reg.async_remove(ent_id)
+                for suffix in ("stage_select", "fertigation_mode"):
+                    uid = f"{DOMAIN}_plant_{pid}_{suffix}"
+                    if ent_id := ent_reg.async_get_entity_id("select", DOMAIN, uid):
+                        ent_reg.async_remove(ent_id)
 
     _sync_entities()
     entry.async_on_unload(

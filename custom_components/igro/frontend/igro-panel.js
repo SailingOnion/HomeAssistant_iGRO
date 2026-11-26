@@ -4,6 +4,8 @@
  */
 
 import {
+  DOSING_ROLE_META,
+  FERTIGATION_MODE_META,
   IGroApi,
   LOG_TYPE_META,
   NUTRIENT_UNITS,
@@ -21,17 +23,21 @@ import {
   scaleNutrientsForVolume,
   stageBadgeHtml,
   vpdBadgeHtml,
-} from "./api.js?v=0.6.0";
+} from "./api.js?v=0.7.0";
 import {
+  renderCalibrateChannelModal,
   renderConfirmModal,
   renderCrossModal,
   renderCuringLogModal,
+  renderDosingChannelModal,
   renderEnvironmentModal,
+  renderFertigationModal,
   renderGrowCycleModal,
   renderHarvestModal,
   renderHarvestSeedsModal,
   renderLightboxModal,
   renderLogModal,
+  renderMixBatchModal,
   renderPedigreeModal,
   renderPhenoHuntModal,
   renderPhenoScoreModal,
@@ -40,11 +46,12 @@ import {
   renderPollenModal,
   renderPresetModal,
   renderReminderModal,
+  renderReservoirModal,
   renderScaledMixHtml,
   renderStageHistoryModal,
   renderStageModal,
-} from "./modals.js?v=0.6.0";
-import { PANEL_STYLES } from "./styles.js?v=0.6.0";
+} from "./modals.js?v=0.7.0";
+import { PANEL_STYLES } from "./styles.js?v=0.7.0";
 
 class IGroPanel extends HTMLElement {
   constructor() {
@@ -60,6 +67,7 @@ class IGroPanel extends HTMLElement {
     this._plantSubTab = "journal"; // journal | photos | history | harvest
     this._journalSubTab = "logs"; // logs | reminders | presets
     this._breedingSubTab = "crosses"; // crosses | phenos | pollen | seeds
+    this._fertSubTab = "reservoirs"; // reservoirs | schedules | history
     this._selectedPhenoHuntId = null;
     this._filters = {
       plantSearch: "",
@@ -91,6 +99,11 @@ class IGroPanel extends HTMLElement {
       breeding_crosses: [],
       seed_batches: [],
       pheno_hunts: [],
+      reservoirs: [],
+      dosing_channels: [],
+      dosing_runs: [],
+      fertigation_schedules: [],
+      fertigation_events: [],
       summary: {},
       meta: { temperature_unit: "°C" },
     };
@@ -101,6 +114,9 @@ class IGroPanel extends HTMLElement {
       co2: [],
       controls: [],
       cameras: [],
+      sensors: [],
+      binary_sensors: [],
+      numbers: [],
     };
     this._journalLogs = [];
     this._galleryPhotos = [];
@@ -272,6 +288,8 @@ class IGroPanel extends HTMLElement {
       mainHtml = this._renderJournal(unit);
     } else if (this._tab === "gallery") {
       mainHtml = this._renderGallery();
+    } else if (this._tab === "fertigation") {
+      mainHtml = this._renderFertigation(unit);
     } else if (this._tab === "breeding") {
       mainHtml = this._renderBreeding();
     } else if (this._tab === "archive") {
@@ -316,6 +334,16 @@ class IGroPanel extends HTMLElement {
         modalHtml = renderPhenoHuntModal(this._modal.data, this._state);
       } else if (this._modal.type === "pheno_score") {
         modalHtml = renderPhenoScoreModal(this._modal.data, this._state);
+      } else if (this._modal.type === "reservoir") {
+        modalHtml = renderReservoirModal(this._modal.data, this._state, this._haEntities);
+      } else if (this._modal.type === "dosing_channel") {
+        modalHtml = renderDosingChannelModal(this._modal.data, this._haEntities);
+      } else if (this._modal.type === "mix_batch") {
+        modalHtml = renderMixBatchModal(this._modal.data, this._state);
+      } else if (this._modal.type === "calibrate_channel") {
+        modalHtml = renderCalibrateChannelModal(this._modal.data);
+      } else if (this._modal.type === "fertigation") {
+        modalHtml = renderFertigationModal(this._modal.data, this._state, this._haEntities);
       } else if (this._modal.type === "confirm") {
         modalHtml = renderConfirmModal(this._modal.data);
       }
@@ -334,6 +362,7 @@ class IGroPanel extends HTMLElement {
             <button class="nav-tab ${this._tab === "overview" ? "active" : ""}" data-tab="overview">📊 Overview</button>
             <button class="nav-tab ${this._tab === "plants" ? "active" : ""}" data-tab="plants">🪴 Plants</button>
             <button class="nav-tab ${this._tab === "environments" ? "active" : ""}" data-tab="environments">⛺ Environments</button>
+            <button class="nav-tab ${this._tab === "fertigation" ? "active" : ""}" data-tab="fertigation">💧 Fertigation</button>
             <button class="nav-tab ${this._tab === "journal" ? "active" : ""}" data-tab="journal">📓 Journal</button>
             <button class="nav-tab ${this._tab === "gallery" ? "active" : ""}" data-tab="gallery">📷 Gallery</button>
             <button class="nav-tab ${this._tab === "breeding" ? "active" : ""}" data-tab="breeding">🧬 Breeding</button>
@@ -823,8 +852,36 @@ class IGroPanel extends HTMLElement {
                 : ""
             }
             <button class="btn btn-sm" data-plant-reminder="${escapeHtml(plant.id)}">⏰ + Reminder</button>
+            <button class="btn btn-sm" data-config-fertigation="${escapeHtml(plant.id)}">💧 ${plant.fertigation ? "Fertigation" : "+ Fertigation"}</button>
+            ${plant.fertigation ? `<button class="btn btn-sm btn-primary" data-run-fert-shot="${escapeHtml(plant.id)}">⚡ Pulse Feed</button>` : ""}
             <button class="btn btn-sm" data-record-harvest="${escapeHtml(plant.id)}">🌾 ${plant.harvest ? "Edit Harvest" : "Record Harvest"}</button>
           </div>
+          ${
+            plant.fertigation
+              ? (() => {
+                  const fs = plant.fertigation;
+                  const fm = FERTIGATION_MODE_META[fs.mode] || FERTIGATION_MODE_META.off;
+                  return `
+                    <div style="margin-top:12px;padding:10px 12px;border-radius:10px;background:var(--igro-surface-2);border:1px solid var(--igro-border);font-size:12px;">
+                      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                          <strong>💧 Fertigation:</strong>
+                          <span class="badge ${fm.cls}">${fm.icon} ${fm.label}</span>
+                          ${fs.reservoir_name ? `<span class="badge badge-muted">🛢 ${escapeHtml(fs.reservoir_name)}</span>` : ""}
+                          <span>Today: <strong>${fs.daily_volume_ml ?? 0} / ${fs.max_daily_volume_ml ?? 4000} mL</strong></span>
+                        </div>
+                        ${fs.next_fertigation_at ? `<span style="color:var(--igro-text-muted);">Next: ${formatRelative(fs.next_fertigation_at)}</span>` : ""}
+                      </div>
+                      ${
+                        fs.shot_times?.length
+                          ? `<div class="log-chips" style="margin-top:6px;">${fs.shot_times.map((t) => `<span class="log-chip">⏱ ${escapeHtml(t)}</span>`).join("")}</div>`
+                          : ""
+                      }
+                    </div>
+                  `;
+                })()
+              : ""
+          }
           ${plant.notes ? `<p class="log-notes" style="margin-top:12px;">${escapeHtml(plant.notes)}</p>` : ""}
         </div>
       </div>
@@ -894,6 +951,7 @@ class IGroPanel extends HTMLElement {
             ${env.exhaust_entity_id ? `<span class="badge ${env.exhaust_state === "on" ? "badge-ok" : "badge-muted"}">💨 Exhaust: ${escapeHtml(env.exhaust_state || "—")}</span>` : ""}
             ${env.humidifier_entity_id ? `<span class="badge ${env.humidifier_state === "on" ? "badge-info" : "badge-muted"}">🌫 Humidifier: ${escapeHtml(env.humidifier_state || "—")}</span>` : ""}
             ${env.camera_entity_id ? `<span class="badge badge-muted">🎥 Camera linked</span>` : ""}
+            ${(env.reservoir_names || []).map((rn) => `<span class="badge badge-info">🛢 ${escapeHtml(rn)}</span>`).join("")}
           </div>
         </div>
       </div>
@@ -1200,6 +1258,327 @@ class IGroPanel extends HTMLElement {
               <p>Upload photos from your phone/desktop or capture snapshots straight from your Home Assistant cameras.</p>
             </div>`
       }
+    `;
+  }
+
+  _renderFertigation(unit) {
+    const reservoirs = this._state.reservoirs || [];
+    const channels = this._state.dosing_channels || [];
+    const schedules = this._state.fertigation_schedules || [];
+    const dosingRuns = this._state.dosing_runs || [];
+    const fertEvents = this._state.fertigation_events || [];
+    const plants = this._state.plants || [];
+
+    const activeSchedCount = schedules.filter((s) => s.mode !== "off").length;
+    const lowBottleCount = channels.filter((c) => c.is_low_bottle).length;
+    const safetyAlertCount = reservoirs.filter((r) => r.safety_alert).length;
+
+    const headerAction =
+      this._fertSubTab === "schedules"
+        ? `<div style="display:flex;gap:8px;align-items:center;">
+            ${
+              plants.length
+                ? `<select class="select" id="fert-pick-plant" style="min-width:160px;">
+                    <option value="">+ Configure Plant...</option>
+                    ${plants.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("")}
+                  </select>`
+                : ""
+            }
+            <button class="btn btn-danger btn-sm" id="btn-global-estop">🛑 E-STOP</button>
+          </div>`
+        : `<div style="display:flex;gap:8px;">
+            <button class="btn btn-primary" id="btn-add-reservoir">+ Add Reservoir</button>
+            <button class="btn btn-danger" id="btn-global-estop">🛑 E-STOP ALL</button>
+          </div>`;
+
+    let bodyHtml = "";
+    if (this._fertSubTab === "reservoirs") {
+      bodyHtml = reservoirs.length
+        ? `<div class="grid-cards">${reservoirs
+            .map((r) => {
+              const rChannels = r.channels || [];
+              const isLocked = ["locked_out", "emergency_stop"].includes(r.status);
+              const statusCls = isLocked
+                ? "badge-danger"
+                : r.status === "mixing" || r.status === "trimming"
+                ? "badge-warn"
+                : "badge-ok";
+              return `
+                <div class="card" style="${r.safety_alert ? "border-color:var(--igro-danger);" : ""}">
+                  <div class="card-body">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+                      <div>
+                        <h3 class="plant-title" style="margin:0;">🛢 ${escapeHtml(r.name)}</h3>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
+                          <span class="badge ${statusCls}">${escapeHtml((r.status || "idle").replace("_", " ").toUpperCase())}</span>
+                          <span class="badge badge-muted">${r.capacity_l}L</span>
+                          ${r.environment_name ? `<span class="badge badge-muted">⛺ ${escapeHtml(r.environment_name)}</span>` : ""}
+                          ${r.auto_trim_enabled ? `<span class="badge badge-info">🎯 Auto-Trim ON</span>` : ""}
+                          ${r.leak_detected ? `<span class="badge badge-danger">🚨 LEAK!</span>` : ""}
+                          ${r.low_level ? `<span class="badge badge-danger">⚠️ Low Level</span>` : ""}
+                        </div>
+                      </div>
+                      <div style="display:flex;gap:6px;">
+                        <button class="btn btn-sm" data-edit-reservoir="${escapeHtml(r.id)}" title="Edit reservoir">✏️</button>
+                        <button class="btn btn-sm btn-danger" data-delete-reservoir="${escapeHtml(r.id)}" title="Delete reservoir">🗑</button>
+                      </div>
+                    </div>
+
+                    ${r.last_error ? `<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:rgba(239,68,68,0.12);color:#ef4444;font-size:12px;">⚠️ ${escapeHtml(r.last_error)}</div>` : ""}
+
+                    <div class="stat-chips" style="grid-template-columns:repeat(4, 1fr);margin-top:12px;">
+                      <div class="stat-chip">
+                        <div class="stat-chip-label">pH</div>
+                        <div class="stat-chip-val">${r.ph ?? "—"}</div>
+                        <div style="font-size:10px;color:var(--igro-text-muted);">tgt ${r.target_ph ?? "—"}</div>
+                      </div>
+                      <div class="stat-chip">
+                        <div class="stat-chip-label">EC</div>
+                        <div class="stat-chip-val">${r.ec ?? "—"}</div>
+                        <div style="font-size:10px;color:var(--igro-text-muted);">tgt ${r.target_ec ?? "—"}</div>
+                      </div>
+                      <div class="stat-chip">
+                        <div class="stat-chip-label">Temp</div>
+                        <div class="stat-chip-val">${formatTemp(r.water_temp_c, unit)}</div>
+                      </div>
+                      <div class="stat-chip">
+                        <div class="stat-chip-label">Level</div>
+                        <div class="stat-chip-val">${r.level_pct !== null && r.level_pct !== undefined ? `${r.level_pct}%` : r.current_volume_l ? `${r.current_volume_l}L` : "—"}</div>
+                      </div>
+                    </div>
+
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px;">
+                      <button class="btn btn-sm btn-primary" data-mix-batch="${escapeHtml(r.id)}">🧪 Mix Batch</button>
+                      <button class="btn btn-sm" data-auto-trim="${escapeHtml(r.id)}">🎯 Trim pH/EC</button>
+                      <button class="btn btn-sm" data-add-channel="${escapeHtml(r.id)}">+ Dosing Channel</button>
+                      ${isLocked ? `<button class="btn btn-sm" style="border-color:var(--igro-accent);color:var(--igro-accent);" data-clear-lockout="${escapeHtml(r.id)}">🔓 Clear Lockout</button>` : ""}
+                    </div>
+
+                    <div style="margin-top:14px;">
+                      <div style="font-size:12px;font-weight:700;color:var(--igro-text-muted);margin-bottom:8px;">
+                        PERISTALTIC DOSING BANK (${rChannels.length} CHANNELS)
+                      </div>
+                      ${
+                        rChannels.length
+                          ? `<div style="display:flex;flex-direction:column;gap:8px;">
+                              ${rChannels
+                                .map((ch) => {
+                                  const rm = DOSING_ROLE_META[ch.role] || DOSING_ROLE_META.additive;
+                                  const fillCls = ch.is_low_bottle ? "danger" : ch.bottle_pct < 30 ? "warn" : "";
+                                  return `
+                                    <div class="dosing-channel-row">
+                                      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap;">
+                                        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                                          <strong style="font-size:13px;">${rm.icon} ${escapeHtml(ch.name)}</strong>
+                                          <span class="badge badge-muted">#${ch.mix_order}</span>
+                                          <span class="badge badge-muted">${ch.flow_rate_ml_s} mL/s</span>
+                                          ${ch.is_low_bottle ? `<span class="badge badge-danger">Low Bottle!</span>` : ""}
+                                          ${!ch.enabled ? `<span class="badge badge-muted">Disabled</span>` : ""}
+                                        </div>
+                                        <div style="display:flex;gap:4px;">
+                                          <button class="btn btn-sm" data-calibrate-channel="${escapeHtml(ch.id)}" title="Calibrate / Prime / Dose">🎯</button>
+                                          <button class="btn btn-sm" data-refill-channel="${escapeHtml(ch.id)}" title="Refill bottle to full">🔄</button>
+                                          <button class="btn btn-sm" data-edit-channel="${escapeHtml(ch.id)}" data-res-id="${escapeHtml(r.id)}" title="Edit channel">✏️</button>
+                                          <button class="btn btn-sm btn-danger" data-delete-channel="${escapeHtml(ch.id)}" title="Delete channel">✕</button>
+                                        </div>
+                                      </div>
+                                      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--igro-text-muted);">
+                                        <span>Bottle: <strong>${Math.round(ch.bottle_remaining_ml)} / ${Math.round(ch.bottle_capacity_ml)} mL</strong> (${ch.bottle_pct}%)</span>
+                                        <span>Today: ${ch.daily_dosed_ml ?? 0} / ${ch.max_daily_dose_ml} mL cap</span>
+                                      </div>
+                                      <div class="gauge-track"><div class="gauge-fill ${fillCls}" style="width:${Math.max(2, ch.bottle_pct)}%;"></div></div>
+                                    </div>
+                                  `;
+                                })
+                                .join("")}
+                            </div>`
+                          : `<div style="font-size:12px;color:var(--igro-text-muted);padding:8px 0;">No peristaltic channels mapped yet. Click <strong>+ Dosing Channel</strong> to bind Silica, Cal-Mag, Base A/B, or pH Down.</div>`
+                      }
+                    </div>
+                  </div>
+                </div>
+              `;
+            })
+            .join("")}</div>`
+        : `<div class="empty-state">
+            <div class="empty-state-emoji">🛢</div>
+            <h3>No reservoirs configured yet</h3>
+            <p>Create a managed reservoir to link live pH, EC, water temp &amp; leak sensors, map peristaltic dosing channels, and run one-click ordered batch mixes.</p>
+            <button class="btn btn-primary" id="btn-empty-reservoir">+ Create First Reservoir</button>
+          </div>`;
+    } else if (this._fertSubTab === "schedules") {
+      bodyHtml = schedules.length
+        ? `<div class="grid-cards">${schedules
+            .map((sc) => {
+              const fm = FERTIGATION_MODE_META[sc.mode] || FERTIGATION_MODE_META.off;
+              const pct = Math.min(
+                100,
+                Math.round(((sc.daily_volume_ml || 0) / Math.max(1, sc.max_daily_volume_ml || 4000)) * 100)
+              );
+              const fillCls = pct >= 90 ? "danger" : pct >= 70 ? "warn" : "";
+              return `
+                <div class="card" style="${sc.leak_detected || sc.reservoir_low ? "border-color:var(--igro-danger);" : ""}">
+                  <div class="card-body">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+                      <div>
+                        <h3 class="plant-title" style="margin:0;">🪴 ${escapeHtml(sc.plant_name)}</h3>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
+                          <span class="badge ${fm.cls}">${fm.icon} ${fm.label}</span>
+                          <span class="badge badge-muted">${escapeHtml((sc.schedule_type || "high_frequency").replace("_", " "))}</span>
+                          ${sc.reservoir_name ? `<span class="badge badge-info">🛢 ${escapeHtml(sc.reservoir_name)}</span>` : ""}
+                        </div>
+                      </div>
+                      <div style="display:flex;gap:6px;">
+                        <button class="btn btn-sm" data-config-fertigation="${escapeHtml(sc.plant_id)}">⚙️</button>
+                        <button class="btn btn-sm btn-danger" data-delete-fertigation="${escapeHtml(sc.plant_id)}">🗑</button>
+                      </div>
+                    </div>
+
+                    ${sc.last_error ? `<div style="margin-top:8px;font-size:12px;color:#ef4444;">⚠️ ${escapeHtml(sc.last_error)}</div>` : ""}
+
+                    <div class="stat-chips" style="margin-top:12px;">
+                      <div class="stat-chip">
+                        <div class="stat-chip-label">Shot Size</div>
+                        <div class="stat-chip-val">${sc.estimated_shot_ml} mL</div>
+                        <div style="font-size:10px;color:var(--igro-text-muted);">${sc.shot_duration_s}s @ ${sc.flow_rate_ml_s} mL/s</div>
+                      </div>
+                      <div class="stat-chip">
+                        <div class="stat-chip-label">Daily Cap</div>
+                        <div class="stat-chip-val">${sc.daily_volume_ml ?? 0} mL</div>
+                        <div style="font-size:10px;color:var(--igro-text-muted);">of ${sc.max_daily_volume_ml} mL</div>
+                      </div>
+                      <div class="stat-chip">
+                        <div class="stat-chip-label">Next Feed</div>
+                        <div class="stat-chip-val" style="font-size:12px;">${sc.next_fertigation_at ? formatRelative(sc.next_fertigation_at) : sc.mode === "moisture_triggered" ? `< ${sc.moisture_threshold_pct}%` : "Paused"}</div>
+                      </div>
+                    </div>
+
+                    <div class="gauge-track"><div class="gauge-fill ${fillCls}" style="width:${Math.max(2, pct)}%;"></div></div>
+
+                    ${
+                      sc.shot_times?.length
+                        ? `<div class="log-chips" style="margin-top:10px;">
+                            ${sc.shot_times.map((t, idx) => `<span class="log-chip">${idx < (sc.p1_ramp_shots || 0) ? "🌅 P1" : "☀️ P2"} ${escapeHtml(t)}</span>`).join("")}
+                          </div>`
+                        : ""
+                    }
+
+                    <div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                      <span style="font-size:11px;color:var(--igro-text-muted);">Last fed: ${sc.last_fed_at ? formatRelative(sc.last_fed_at) : "Never"}</span>
+                      <button class="btn btn-sm btn-primary" data-run-fert-shot="${escapeHtml(sc.plant_id)}">⚡ Manual Pulse</button>
+                    </div>
+                  </div>
+                </div>
+              `;
+            })
+            .join("")}</div>`
+        : `<div class="empty-state">
+            <div class="empty-state-emoji">⏱</div>
+            <h3>No plant fertigation schedules yet</h3>
+            <p>Select a plant from the dropdown above (or from any Plant Detail page) to configure high-frequency P1/P2/P3 crop-steering shots, solenoid valves, or moisture-triggered feeding.</p>
+          </div>`;
+    } else if (this._fertSubTab === "history") {
+      const combined = [
+        ...dosingRuns.map((r) => ({ kind: "dosing", ts: r.started_at, item: r })),
+        ...fertEvents.map((e) => ({ kind: "fert", ts: e.logged_at, item: e })),
+      ].sort((a, b) => (b.ts || "").localeCompare(a.ts || ""));
+
+      bodyHtml = combined.length
+        ? `<div class="timeline">${combined
+            .map(({ kind, item }) => {
+              if (kind === "dosing") {
+                const isAbort = item.status === "aborted";
+                return `
+                  <div class="log-item" style="${isAbort ? "border-color:var(--igro-danger);" : ""}">
+                    <div class="log-icon" style="background:rgba(16,185,129,0.16);color:#10b981;">🧪</div>
+                    <div class="log-body">
+                      <div class="log-header">
+                        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                          <span class="log-title">${escapeHtml((item.run_type || "batch_mix").replace(/_/g, " ").toUpperCase())}</span>
+                          <span class="badge ${isAbort ? "badge-danger" : "badge-ok"}">${escapeHtml(item.status)}</span>
+                          ${item.reservoir_name ? `<span class="badge badge-muted">🛢 ${escapeHtml(item.reservoir_name)}</span>` : ""}
+                          ${item.preset_name ? `<span class="badge badge-info">🧪 ${escapeHtml(item.preset_name)}</span>` : ""}
+                        </div>
+                        <span class="log-time">${formatRelative(item.started_at)}</span>
+                      </div>
+                      <div class="log-chips">
+                        <span class="log-chip">Total: <strong>${item.dosed_ml} mL</strong></span>
+                        ${item.target_volume_l ? `<span class="log-chip">Batch: ${item.target_volume_l}L</span>` : ""}
+                        ${(item.steps || []).map((st) => `<span class="log-chip">${escapeHtml(st.channel_name || "Ch")}: ${st.dose_ml} mL</span>`).join("")}
+                      </div>
+                      ${item.abort_reason ? `<p class="log-notes" style="color:#ef4444;">⚠️ ${escapeHtml(item.abort_reason)}</p>` : ""}
+                    </div>
+                  </div>
+                `;
+              }
+              const isBlocked = item.status === "blocked" || item.status === "aborted";
+              return `
+                <div class="log-item" style="${isBlocked ? "border-color:var(--igro-danger);" : ""}">
+                  <div class="log-icon" style="background:rgba(14,165,233,0.16);color:#0ea5e9;">⚡</div>
+                  <div class="log-body">
+                    <div class="log-header">
+                      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                        <span class="log-title">Fertigation Shot (${escapeHtml(item.trigger_type)})</span>
+                        <span class="badge ${isBlocked ? "badge-danger" : "badge-ok"}">${escapeHtml(item.status)}</span>
+                        ${item.plant_name ? `<span class="badge badge-muted">🪴 ${escapeHtml(item.plant_name)}</span>` : ""}
+                      </div>
+                      <span class="log-time">${formatRelative(item.logged_at)}</span>
+                    </div>
+                    <div class="log-chips">
+                      <span class="log-chip">💧 ${item.volume_ml} mL (${item.duration_s}s)</span>
+                      ${item.reservoir_ph !== null && item.reservoir_ph !== undefined ? `<span class="log-chip">pH ${item.reservoir_ph}</span>` : ""}
+                      ${item.reservoir_ec !== null && item.reservoir_ec !== undefined ? `<span class="log-chip">EC ${item.reservoir_ec}</span>` : ""}
+                    </div>
+                    ${item.block_reason ? `<p class="log-notes" style="color:#ef4444;">🛡 ${escapeHtml(item.block_reason)}</p>` : ""}
+                  </div>
+                </div>
+              `;
+            })
+            .join("")}</div>`
+        : `<div class="empty-state"><p>No fertigation shots or dosing runs recorded yet.</p></div>`;
+    }
+
+    return `
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div>
+            <div class="kpi-label">Reservoirs</div>
+            <div class="kpi-value">${reservoirs.length}</div>
+          </div>
+          <span class="kpi-emoji">🛢</span>
+        </div>
+        <div class="kpi-card">
+          <div>
+            <div class="kpi-label">Dosing Channels</div>
+            <div class="kpi-value">${channels.length}</div>
+          </div>
+          <span class="kpi-emoji">🧪</span>
+        </div>
+        <div class="kpi-card">
+          <div>
+            <div class="kpi-label">Active Schedules</div>
+            <div class="kpi-value">${activeSchedCount} <span style="font-size:14px;color:var(--igro-text-muted);font-weight:500;">/ ${schedules.length}</span></div>
+          </div>
+          <span class="kpi-emoji">⏱</span>
+        </div>
+        <div class="kpi-card">
+          <div>
+            <div class="kpi-label">Safety &amp; Low Bottles</div>
+            <div class="kpi-value" style="color:${safetyAlertCount + lowBottleCount > 0 ? "var(--igro-danger)" : "var(--igro-accent)"}">${safetyAlertCount + lowBottleCount}</div>
+          </div>
+          <span class="kpi-emoji">${safetyAlertCount + lowBottleCount > 0 ? "🚨" : "🛡"}</span>
+        </div>
+      </div>
+
+      <div class="section-header">
+        <div class="nav-tabs">
+          <button class="nav-tab ${this._fertSubTab === "reservoirs" ? "active" : ""}" data-fert-subtab="reservoirs">🛢 Reservoirs &amp; Dosing (${reservoirs.length})</button>
+          <button class="nav-tab ${this._fertSubTab === "schedules" ? "active" : ""}" data-fert-subtab="schedules">⏱ Plant Schedules (${schedules.length})</button>
+          <button class="nav-tab ${this._fertSubTab === "history" ? "active" : ""}" data-fert-subtab="history">📜 Run History (${dosingRuns.length + fertEvents.length})</button>
+        </div>
+        ${headerAction}
+      </div>
+      ${bodyHtml}
     `;
   }
 
@@ -2555,6 +2934,205 @@ class IGroPanel extends HTMLElement {
       });
     });
 
+    // Fertigation & Reservoir Dosing actions
+    root.querySelectorAll("[data-fert-subtab]").forEach((el) => {
+      el.addEventListener("click", () => {
+        this._fertSubTab = el.dataset.fertSubtab;
+        this._render();
+      });
+    });
+
+    const openNewReservoir = async () => {
+      await this._refreshHaEntities();
+      this._modal = { type: "reservoir", data: null };
+      this._render();
+    };
+    root.getElementById("btn-add-reservoir")?.addEventListener("click", openNewReservoir);
+    root.getElementById("btn-empty-reservoir")?.addEventListener("click", openNewReservoir);
+
+    root.getElementById("btn-global-estop")?.addEventListener("click", () => {
+      this._openConfirm({
+        title: "🛑 Emergency Stop All Pumps & Dosers",
+        message: "Immediately turn OFF all feed pumps, solenoid valves, circulation pumps, and dosing relays, and pause automated fertigation?",
+        confirmLabel: "🛑 Trigger E-STOP",
+        onConfirm: async () => {
+          await this._api.emergencyStop("Emergency stop triggered from iGro UI");
+          await this._refreshState();
+          this._showToast("EMERGENCY STOP executed — all outputs turned OFF", true);
+        },
+      });
+    });
+
+    root.querySelectorAll("[data-edit-reservoir]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        await this._refreshHaEntities();
+        const r = (this._state.reservoirs || []).find((x) => x.id === el.dataset.editReservoir);
+        if (r) {
+          this._modal = { type: "reservoir", data: r };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-delete-reservoir]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const r = (this._state.reservoirs || []).find((x) => x.id === el.dataset.deleteReservoir);
+        if (!r) return;
+        this._openConfirm({
+          title: "🗑 Delete Reservoir",
+          message: `Delete reservoir "${r.name}" and its peristaltic dosing channels?`,
+          confirmLabel: "Delete Reservoir",
+          onConfirm: async () => {
+            await this._api.deleteReservoir(r.id);
+            await this._refreshState();
+            this._showToast(`Deleted "${r.name}"`);
+          },
+        });
+      });
+    });
+
+    root.querySelectorAll("[data-mix-batch]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const r = (this._state.reservoirs || []).find((x) => x.id === el.dataset.mixBatch);
+        if (r) {
+          this._modal = { type: "mix_batch", data: r };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-auto-trim]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        try {
+          const res = await this._api.autoTrimReservoir(el.dataset.autoTrim);
+          await this._refreshState();
+          this._showToast(
+            res?.trimmed ? `Auto-trim dosed (${res.action})` : res?.reason || "Within targets!"
+          );
+        } catch (err) {
+          this._showToast(`Trim aborted: ${err.message || err}`, true);
+          await this._refreshState();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-clear-lockout]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        await this._api.clearReservoirLockout(el.dataset.clearLockout);
+        await this._refreshState();
+        this._showToast("Reservoir lockout cleared");
+      });
+    });
+
+    root.querySelectorAll("[data-add-channel]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        await this._refreshHaEntities();
+        const r = (this._state.reservoirs || []).find((x) => x.id === el.dataset.addChannel);
+        if (r) {
+          this._modal = { type: "dosing_channel", data: { reservoir: r, channel: null } };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-edit-channel]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        await this._refreshHaEntities();
+        const r = (this._state.reservoirs || []).find((x) => x.id === el.dataset.resId);
+        const ch = (this._state.dosing_channels || []).find((c) => c.id === el.dataset.editChannel);
+        if (r && ch) {
+          this._modal = { type: "dosing_channel", data: { reservoir: r, channel: ch } };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-delete-channel]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const ch = (this._state.dosing_channels || []).find((c) => c.id === el.dataset.deleteChannel);
+        if (!ch) return;
+        this._openConfirm({
+          title: "🗑 Delete Dosing Channel",
+          message: `Delete peristaltic channel "${ch.name}"?`,
+          confirmLabel: "Delete Channel",
+          onConfirm: async () => {
+            await this._api.deleteDosingChannel(ch.id);
+            await this._refreshState();
+            this._showToast(`Deleted "${ch.name}"`);
+          },
+        });
+      });
+    });
+
+    root.querySelectorAll("[data-calibrate-channel]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const ch = (this._state.dosing_channels || []).find((c) => c.id === el.dataset.calibrateChannel);
+        if (ch) {
+          this._modal = { type: "calibrate_channel", data: ch };
+          this._render();
+        }
+      });
+    });
+
+    root.querySelectorAll("[data-refill-channel]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        await this._api.refillChannel(el.dataset.refillChannel);
+        await this._refreshState();
+        this._showToast("Bottle marked refilled!");
+      });
+    });
+
+    const openFertigationForPlant = async (plantId) => {
+      await this._refreshHaEntities();
+      const plant = (this._state.plants || []).find((p) => p.id === plantId);
+      if (!plant) return;
+      this._modal = {
+        type: "fertigation",
+        data: { plant, schedule: plant.fertigation || null },
+      };
+      this._render();
+    };
+
+    root.getElementById("fert-pick-plant")?.addEventListener("change", (e) => {
+      if (e.target.value) openFertigationForPlant(e.target.value);
+    });
+
+    root.querySelectorAll("[data-config-fertigation]").forEach((el) => {
+      el.addEventListener("click", () => openFertigationForPlant(el.dataset.configFertigation));
+    });
+
+    root.querySelectorAll("[data-delete-fertigation]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const pid = el.dataset.deleteFertigation;
+        this._openConfirm({
+          title: "🗑 Delete Fertigation Schedule",
+          message: "Remove this plant's automated fertigation schedule?",
+          confirmLabel: "Delete Schedule",
+          onConfirm: async () => {
+            await this._api.deleteFertigationSchedule(pid);
+            await this._refreshState();
+            this._showToast("Fertigation schedule removed");
+          },
+        });
+      });
+    });
+
+    root.querySelectorAll("[data-run-fert-shot]").forEach((el) => {
+      el.addEventListener("click", async () => {
+        try {
+          const res = await this._api.runFertigationShot(el.dataset.runFertShot);
+          await this._refreshState();
+          if (res?.blocked) {
+            this._showToast(`Blocked by safety interlock: ${res.reason}`, true);
+          } else {
+            this._showToast(`Fertigation shot delivered (${res?.event?.volume_ml ?? 0} mL) & logged!`);
+          }
+        } catch (err) {
+          this._showToast(`Error: ${err.message || err}`, true);
+        }
+      });
+    });
+
     // Modal backdrop / close
     root.querySelectorAll("[data-close-modal]").forEach((el) => {
       el.addEventListener("click", (e) => {
@@ -3228,6 +3806,141 @@ class IGroPanel extends HTMLElement {
         this._modal = null;
         await this._refreshState();
         this._showToast("Phenotype scorecard saved!");
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Reservoir form submit
+    root.getElementById("reservoir-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const data = Object.fromEntries(fd.entries());
+      data.auto_trim_enabled = fd.get("auto_trim_enabled") !== null;
+      for (const k of Object.keys(data)) {
+        if (data[k] === "") data[k] = null;
+      }
+      try {
+        if (this._modal.data?.id) {
+          await this._api.updateReservoir(this._modal.data.id, data);
+          this._showToast("Reservoir updated!");
+        } else {
+          await this._api.createReservoir(data);
+          this._showToast("Reservoir created!");
+        }
+        this._modal = null;
+        await this._refreshState();
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Dosing channel form submit
+    root.getElementById("dosing-channel-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const { reservoir, channel } = this._modal.data;
+      const data = Object.fromEntries(fd.entries());
+      data.reservoir_id = reservoir.id;
+      data.enabled = fd.get("enabled") !== null;
+      for (const k of Object.keys(data)) {
+        if (data[k] === "") data[k] = null;
+      }
+      try {
+        if (channel?.id) {
+          await this._api.updateDosingChannel(channel.id, data);
+          this._showToast("Dosing channel updated!");
+        } else {
+          await this._api.createDosingChannel(data);
+          this._showToast("Dosing channel added!");
+        }
+        this._modal = null;
+        await this._refreshState();
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Ordered Batch Mix form submit
+    root.getElementById("mix-batch-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const reservoir = this._modal.data;
+      const presetId = fd.get("preset_id");
+      const volL = parseFloat(fd.get("target_volume_l"));
+      try {
+        const res = await this._api.mixReservoirBatch(reservoir.id, presetId, volL);
+        this._modal = null;
+        await this._refreshState();
+        this._showToast(`Batch mix complete (${res?.run?.dosed_ml ?? 0} mL dosed)!`);
+      } catch (err) {
+        this._showToast(`Batch mix aborted: ${err.message || err}`, true);
+        await this._refreshState();
+      }
+    });
+
+    // Calibrate / Prime / Manual Dose channel handlers
+    root.getElementById("btn-prime-channel")?.addEventListener("click", async () => {
+      const ch = this._modal.data;
+      const ml = parseFloat(root.getElementById("quick-dose-ml")?.value || "5");
+      try {
+        await this._api.doseChannel(ch.id, ml, "prime");
+        await this._refreshState();
+        this._showToast(`Primed ${ch.name} (${ml} mL)`);
+      } catch (err) {
+        this._showToast(`Prime failed: ${err.message || err}`, true);
+      }
+    });
+
+    root.getElementById("btn-manual-dose-channel")?.addEventListener("click", async () => {
+      const ch = this._modal.data;
+      const ml = parseFloat(root.getElementById("quick-dose-ml")?.value || "5");
+      try {
+        await this._api.doseChannel(ch.id, ml, "manual_dose");
+        await this._refreshState();
+        this._showToast(`Dosed ${ml} mL on ${ch.name}`);
+      } catch (err) {
+        this._showToast(`Dose blocked: ${err.message || err}`, true);
+      }
+    });
+
+    root.getElementById("calibrate-channel-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const ch = this._modal.data;
+      const secs = parseFloat(fd.get("test_seconds"));
+      const ml = parseFloat(fd.get("measured_ml"));
+      if (!(secs > 0 && ml > 0)) return;
+      const rate = Math.round((ml / secs) * 1000) / 1000;
+      try {
+        await this._api.updateDosingChannel(ch.id, { flow_rate_ml_s: rate });
+        this._modal = null;
+        await this._refreshState();
+        this._showToast(`Calibrated ${ch.name} to ${rate} mL/s!`);
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Fertigation Schedule form submit
+    root.getElementById("fertigation-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const { plant } = this._modal.data;
+      const data = Object.fromEntries(fd.entries());
+      data.use_shared_pump = fd.get("use_shared_pump") !== null;
+      const rawFixed = (data.fixed_times || "").trim();
+      data.fixed_times = rawFixed
+        ? rawFixed.split(",").map((s) => s.trim()).filter(Boolean)
+        : [];
+      for (const k of Object.keys(data)) {
+        if (data[k] === "") data[k] = null;
+      }
+      try {
+        await this._api.upsertFertigationSchedule(plant.id, data);
+        this._modal = null;
+        await this._refreshState();
+        this._showToast(`Saved fertigation schedule for ${plant.name}!`);
       } catch (err) {
         this._showToast(`Error: ${err.message || err}`, true);
       }
