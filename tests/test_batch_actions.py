@@ -64,10 +64,20 @@ async def test_batch_set_stage_and_batch_move_plants(tmp_path: Path) -> None:
     veg_tent = await db.async_create_environment({"name": "Veg Tent"})
     flower_tent = await db.async_create_environment({"name": "Flower Tent"})
     p1 = await db.async_create_plant(
-        {"name": "NL #1", "environment_id": veg_tent["id"], "stage": "vegetative"}
+        {
+            "name": "NL #1",
+            "environment_id": veg_tent["id"],
+            "stage": "vegetative",
+            "started_at": "2026-03-01",
+        }
     )
     p2 = await db.async_create_plant(
-        {"name": "NL #2", "environment_id": veg_tent["id"], "stage": "vegetative"}
+        {
+            "name": "NL #2",
+            "environment_id": veg_tent["id"],
+            "stage": "vegetative",
+            "started_at": "2026-03-01",
+        }
     )
 
     # Bulk move both plants to Flower Tent
