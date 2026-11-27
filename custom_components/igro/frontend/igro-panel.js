@@ -23,8 +23,10 @@ import {
   scaleNutrientsForVolume,
   stageBadgeHtml,
   vpdBadgeHtml,
-} from "./api.js?v=0.7.0";
+} from "./api.js?v=0.8.0";
 import {
+  renderBatchMoveModal,
+  renderBatchStageModal,
   renderCalibrateChannelModal,
   renderConfirmModal,
   renderCrossModal,
@@ -50,8 +52,8 @@ import {
   renderScaledMixHtml,
   renderStageHistoryModal,
   renderStageModal,
-} from "./modals.js?v=0.7.0";
-import { PANEL_STYLES } from "./styles.js?v=0.7.0";
+} from "./modals.js?v=0.8.0";
+import { PANEL_STYLES } from "./styles.js?v=0.8.0";
 
 class IGroPanel extends HTMLElement {
   constructor() {
@@ -69,6 +71,8 @@ class IGroPanel extends HTMLElement {
     this._breedingSubTab = "crosses"; // crosses | phenos | pollen | seeds
     this._fertSubTab = "reservoirs"; // reservoirs | schedules | history
     this._selectedPhenoHuntId = null;
+    this._multiSelectMode = false;
+    this._selectedPlantIds = new Set();
     this._filters = {
       plantSearch: "",
       plantStage: "",
@@ -344,6 +348,10 @@ class IGroPanel extends HTMLElement {
         modalHtml = renderCalibrateChannelModal(this._modal.data);
       } else if (this._modal.type === "fertigation") {
         modalHtml = renderFertigationModal(this._modal.data, this._state, this._haEntities);
+      } else if (this._modal.type === "batch_stage") {
+        modalHtml = renderBatchStageModal(this._modal.data, this._state);
+      } else if (this._modal.type === "batch_move") {
+        modalHtml = renderBatchMoveModal(this._modal.data, this._state);
       } else if (this._modal.type === "confirm") {
         modalHtml = renderConfirmModal(this._modal.data);
       }
@@ -487,9 +495,13 @@ class IGroPanel extends HTMLElement {
     `;
   }
 
-  _renderPlantCard(p) {
+  _renderPlantCard(p, multiSelect = false) {
+    const isSelected = multiSelect && this._selectedPlantIds.has(p.id);
+    const clickAttr = multiSelect
+      ? `data-toggle-select-plant="${escapeHtml(p.id)}"`
+      : `data-open-plant="${escapeHtml(p.id)}"`;
     return `
-      <div class="card clickable" data-open-plant="${escapeHtml(p.id)}">
+      <div class="card clickable ${isSelected ? "selected-card" : ""}" ${clickAttr}>
         <div class="plant-cover">
           ${
             p.cover_photo_url
@@ -497,7 +509,11 @@ class IGroPanel extends HTMLElement {
               : `<span class="plant-cover-placeholder">${STAGE_META[p.stage]?.icon || "🌱"}</span>`
           }
           <div class="plant-cover-overlay">
-            ${stageBadgeHtml(p.stage)}
+            ${
+              multiSelect
+                ? `<span class="select-check-pill ${isSelected ? "checked" : ""}">${isSelected ? "☑️ Selected" : "⬜ Select"}</span>`
+                : stageBadgeHtml(p.stage)
+            }
             <span class="plant-day-pill">Day ${p.total_days ?? 0} · Wk ${p.stage_week ?? 1}</span>
           </div>
         </div>
@@ -543,11 +559,35 @@ class IGroPanel extends HTMLElement {
       return true;
     });
 
+    const visibleIds = new Set(plants.map((p) => p.id));
+    const selectedCount = [...this._selectedPlantIds].filter((id) => visibleIds.has(id)).length;
+
     return `
       <div class="section-header" style="margin-top:0;">
         <h2 class="section-title">🪴 Plants (${plants.length})</h2>
-        <button class="btn btn-primary" id="btn-add-plant-2">+ Add Plant</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn ${this._multiSelectMode ? "btn-primary" : ""}" id="btn-toggle-multiselect">${this._multiSelectMode ? "✕ Exit Multi-Select" : "☑️ Multi-Select"}</button>
+          <button class="btn btn-primary" id="btn-add-plant-2">+ Add Plant</button>
+        </div>
       </div>
+      ${
+        this._multiSelectMode
+          ? `
+        <div class="batch-toolbar">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <strong>☑️ ${selectedCount} selected</strong>
+            <button class="btn btn-sm" id="btn-batch-select-all">Select All (${plants.length})</button>
+            <button class="btn btn-sm" id="btn-batch-clear">Clear</button>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn btn-sm btn-primary" id="btn-batch-log" ${selectedCount ? "" : "disabled"}>📓 Batch Log</button>
+            <button class="btn btn-sm" id="btn-batch-stage" ${selectedCount ? "" : "disabled"}>🔄 Bulk Stage</button>
+            <button class="btn btn-sm" id="btn-batch-move" ${selectedCount ? "" : "disabled"}>⛺ Move Tent</button>
+          </div>
+        </div>
+      `
+          : ""
+      }
       <div class="filter-bar">
         <input class="input" id="filter-plant-search" placeholder="Search name, strain, breeder..." value="${escapeHtml(f.plantSearch)}" style="min-width:220px;" />
         <select class="select" id="filter-plant-stage">
@@ -561,7 +601,7 @@ class IGroPanel extends HTMLElement {
       </div>
       ${
         plants.length
-          ? `<div class="grid-cards">${plants.map((p) => this._renderPlantCard(p)).join("")}</div>`
+          ? `<div class="grid-cards">${plants.map((p) => this._renderPlantCard(p, this._multiSelectMode)).join("")}</div>`
           : `<div class="empty-state">
               <div class="empty-state-emoji">🌱</div>
               <h3>No matching plants</h3>
@@ -953,6 +993,14 @@ class IGroPanel extends HTMLElement {
             ${env.camera_entity_id ? `<span class="badge badge-muted">🎥 Camera linked</span>` : ""}
             ${(env.reservoir_names || []).map((rn) => `<span class="badge badge-info">🛢 ${escapeHtml(rn)}</span>`).join("")}
           </div>
+          ${
+            (env.total_plant_count ?? 0) > 0
+              ? `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--igro-border);display:flex;gap:8px;flex-wrap:wrap;">
+                  <button class="btn btn-sm btn-primary" data-env-batch-log="${escapeHtml(env.id)}">💧 Batch Log (${env.plant_count || env.total_plant_count})</button>
+                  <button class="btn btn-sm" data-env-batch-stage="${escapeHtml(env.id)}">🔄 Flip Tent Stage</button>
+                </div>`
+              : ""
+          }
         </div>
       </div>
     `;
@@ -3133,6 +3181,124 @@ class IGroPanel extends HTMLElement {
       });
     });
 
+    // Batch Actions (Multi-Select in Plants + Whole-Tent Quick Actions)
+    root.getElementById("btn-toggle-multiselect")?.addEventListener("click", () => {
+      this._multiSelectMode = !this._multiSelectMode;
+      if (!this._multiSelectMode) this._selectedPlantIds.clear();
+      this._render();
+    });
+
+    root.querySelectorAll("[data-toggle-select-plant]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const pid = el.dataset.toggleSelectPlant;
+        if (this._selectedPlantIds.has(pid)) {
+          this._selectedPlantIds.delete(pid);
+        } else {
+          this._selectedPlantIds.add(pid);
+        }
+        this._render();
+      });
+    });
+
+    root.getElementById("btn-batch-select-all")?.addEventListener("click", () => {
+      const f = this._filters;
+      (this._state.plants || []).forEach((p) => {
+        if (f.plantStage && p.stage !== f.plantStage) return;
+        if (f.plantEnv && p.environment_id !== f.plantEnv) return;
+        if (f.plantSearch) {
+          const hay = `${p.name} ${p.strain || ""} ${p.breeder || ""}`.toLowerCase();
+          if (!hay.includes(f.plantSearch.toLowerCase())) return;
+        }
+        this._selectedPlantIds.add(p.id);
+      });
+      this._render();
+    });
+
+    root.getElementById("btn-batch-clear")?.addEventListener("click", () => {
+      this._selectedPlantIds.clear();
+      this._render();
+    });
+
+    root.getElementById("btn-batch-log")?.addEventListener("click", () => {
+      const ids = [...this._selectedPlantIds];
+      if (!ids.length) return;
+      this._modal = {
+        type: "log",
+        data: {
+          log_type: "water",
+          batch_plant_ids: ids,
+          batch_label: `${ids.length} selected plants`,
+          split_water_volume: false,
+        },
+      };
+      this._render();
+    });
+
+    root.getElementById("btn-batch-stage")?.addEventListener("click", () => {
+      const ids = [...this._selectedPlantIds];
+      if (!ids.length) return;
+      this._modal = {
+        type: "batch_stage",
+        data: {
+          plantIds: ids,
+          environmentId: null,
+          label: `${ids.length} selected plants`,
+        },
+      };
+      this._render();
+    });
+
+    root.getElementById("btn-batch-move")?.addEventListener("click", () => {
+      const ids = [...this._selectedPlantIds];
+      if (!ids.length) return;
+      this._modal = {
+        type: "batch_move",
+        data: {
+          plantIds: ids,
+          label: `${ids.length} selected plants`,
+        },
+      };
+      this._render();
+    });
+
+    root.querySelectorAll("[data-env-batch-log]").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const env = (this._state.environments || []).find((x) => x.id === el.dataset.envBatchLog);
+        if (!env) return;
+        const count = env.plant_count || env.total_plant_count || 0;
+        this._modal = {
+          type: "log",
+          data: {
+            log_type: "water",
+            batch_environment_id: env.id,
+            batch_label: `All active plants in ${env.name} (${count})`,
+            split_water_volume: true,
+          },
+        };
+        this._render();
+      });
+    });
+
+    root.querySelectorAll("[data-env-batch-stage]").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const env = (this._state.environments || []).find((x) => x.id === el.dataset.envBatchStage);
+        if (!env) return;
+        const count = env.plant_count || env.total_plant_count || 0;
+        this._modal = {
+          type: "batch_stage",
+          data: {
+            plantIds: null,
+            environmentId: env.id,
+            label: `All active plants in ${env.name} (${count})`,
+            defaultStage: "flowering",
+          },
+        };
+        this._render();
+      });
+    });
+
     // Modal backdrop / close
     root.querySelectorAll("[data-close-modal]").forEach((el) => {
       el.addEventListener("click", (e) => {
@@ -3357,6 +3523,19 @@ class IGroPanel extends HTMLElement {
         if (this._modal.data?.id) {
           await this._api.updateLog(this._modal.data.id, data);
           this._showToast("Journal entry updated!");
+        } else if (
+          this._modal.data?.batch_plant_ids?.length ||
+          this._modal.data?.batch_environment_id
+        ) {
+          const splitVol = fd.get("split_water_volume") !== null;
+          const res = await this._api.createBatchLog(data, {
+            plant_ids: this._modal.data.batch_plant_ids || null,
+            environment_id: this._modal.data.batch_environment_id || null,
+            split_water_volume: splitVol,
+          });
+          this._selectedPlantIds.clear();
+          this._multiSelectMode = false;
+          this._showToast(`Logged action for ${res?.count ?? 0} plants!`);
         } else {
           await this._api.createLog(data);
           this._showToast(data.status === "planned" ? "Planned entry scheduled!" : "Journal entry saved!");
@@ -3941,6 +4120,73 @@ class IGroPanel extends HTMLElement {
         this._modal = null;
         await this._refreshState();
         this._showToast(`Saved fertigation schedule for ${plant.name}!`);
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Batch Stage transition modal
+    const batchDateInp = root.getElementById("batch-stage-date");
+    if (batchDateInp) {
+      const updateBatchStageUi = () => {
+        const todayDefault = root.querySelector("#batch-stage-form [name='today_default']")?.value || "";
+        const isFuture = Boolean(batchDateInp.value && todayDefault && batchDateInp.value > todayDefault);
+        const box = root.getElementById("batch-stage-schedule-opts");
+        const btn = root.getElementById("batch-stage-submit");
+        if (box) box.style.display = isFuture ? "block" : "none";
+        if (btn) btn.textContent = isFuture ? "📅 Schedule Batch Transition" : "🔄 Update Stages";
+      };
+      batchDateInp.addEventListener("change", updateBatchStageUi);
+      updateBatchStageUi();
+    }
+
+    root.getElementById("batch-stage-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const { plantIds, environmentId } = this._modal.data;
+      const stage = fd.get("stage");
+      const notes = (fd.get("notes") || "").trim() || null;
+      const pickedDate = (fd.get("changed_at") || "").trim();
+      const todayDefault = fd.get("today_default") || "";
+      const changedAt = pickedDate && pickedDate !== todayDefault ? pickedDate : null;
+      const autoApply = fd.get("auto_apply") !== null;
+      try {
+        const res = await this._api.setBatchPlantStage({
+          plant_ids: plantIds,
+          environment_id: environmentId,
+          stage,
+          notes,
+          changed_at: changedAt,
+          auto_apply: autoApply,
+        });
+        this._modal = null;
+        this._selectedPlantIds.clear();
+        this._multiSelectMode = false;
+        await this._refreshState();
+        const cnt = res?.count ?? 0;
+        this._showToast(
+          res?.scheduled
+            ? `Scheduled ${cnt} plants → ${STAGE_META[stage]?.label || stage}`
+            : `Moved ${cnt} plants to ${STAGE_META[stage]?.label || stage}!`
+        );
+      } catch (err) {
+        this._showToast(`Error: ${err.message || err}`, true);
+      }
+    });
+
+    // Batch Move plants modal
+    root.getElementById("batch-move-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const { plantIds } = this._modal.data;
+      const envId = fd.get("environment_id") || null;
+      try {
+        const res = await this._api.batchMovePlants(plantIds, envId);
+        this._modal = null;
+        this._selectedPlantIds.clear();
+        this._multiSelectMode = false;
+        await this._refreshState();
+        this._showToast(`Moved ${res?.count ?? 0} plants!`);
       } catch (err) {
         this._showToast(`Error: ${err.message || err}`, true);
       }

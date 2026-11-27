@@ -15,6 +15,7 @@ from .calculations import (
     scale_nutrients_for_volume,
 )
 from .const import (
+    ACTIVE_STAGES,
     DOMAIN,
     EVENT_HARVEST_RECORDED,
     EVENT_LOG_CREATED,
@@ -71,6 +72,44 @@ def _resolve_preset(
     raise HomeAssistantError(f"Nutrient preset '{identifier}' not found")
 
 
+def _resolve_environment_id(coordinator: IGroCoordinator, identifier: str) -> str:
+    """Resolve an environment by ID or case-insensitive name."""
+    envs = (coordinator.data or {}).get("environments", {})
+    if identifier in envs:
+        return identifier
+    lowered = identifier.strip().lower()
+    for eid, env in envs.items():
+        if env["name"].strip().lower() == lowered:
+            return eid
+    raise HomeAssistantError(f"Environment '{identifier}' not found")
+
+
+def _resolve_target_plant_ids(
+    coordinator: IGroCoordinator,
+    *,
+    plant_ref: str | None = None,
+    plant_refs: list[str] | None = None,
+    environment_ref: str | None = None,
+) -> list[str]:
+    """Resolve target plant IDs from single plant, list of plants, or environment."""
+    if plant_refs:
+        return [_resolve_plant_id(coordinator, ref) for ref in plant_refs]
+    if plant_ref:
+        return [_resolve_plant_id(coordinator, plant_ref)]
+    if environment_ref:
+        env_id = _resolve_environment_id(coordinator, environment_ref)
+        plants = (coordinator.data or {}).get("plants", {})
+        active = [
+            pid
+            for pid, p in plants.items()
+            if p.get("environment_id") == env_id and p.get("stage") in ACTIVE_STAGES
+        ]
+        if active:
+            return active
+        return [pid for pid, p in plants.items() if p.get("environment_id") == env_id]
+    return []
+
+
 async def async_register_services(hass: HomeAssistant) -> None:
     """Register iGro Home Assistant services."""
 
@@ -78,7 +117,16 @@ async def async_register_services(hass: HomeAssistant) -> None:
         coordinator = _get_coordinator(hass)
         data = dict(call.data)
         plant_ref = data.pop("plant", None)
-        plant_id = _resolve_plant_id(coordinator, plant_ref) if plant_ref else None
+        plant_refs = data.pop("plants", None)
+        env_ref = data.get("environment_id")
+        split_vol = bool(data.pop("split_water_volume", False))
+
+        target_ids = _resolve_target_plant_ids(
+            coordinator,
+            plant_ref=plant_ref,
+            plant_refs=plant_refs,
+            environment_ref=env_ref if not plant_ref and not plant_refs else None,
+        )
         preset_ref = data.pop("preset", None)
         preset = _resolve_preset(coordinator, preset_ref) if preset_ref else None
 
@@ -108,10 +156,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
         is_planned = status == "planned" or (
             status is None and is_timestamp_in_future(logged_at)
         )
+        should_snapshot = not is_planned and is_timestamp_near_now(logged_at)
 
         payload = {
-            "plant_id": plant_id,
-            "environment_id": data.get("environment_id"),
+            "environment_id": (
+                _resolve_environment_id(coordinator, env_ref) if env_ref else None
+            ),
             "log_type": data["log_type"],
             "title": title,
             "notes": data.get("notes"),
@@ -127,18 +177,41 @@ async def async_register_services(hass: HomeAssistant) -> None:
             "training_method": data.get("training_method"),
             "nutrients": nutrients,
         }
-        if not is_planned and is_timestamp_near_now(logged_at):
-            env_readings = coordinator.get_environment_readings_for_plant(plant_id)
-            payload.update(
-                {k: v for k, v in env_readings.items() if v is not None}
+
+        if target_ids:
+            readings_map = (
+                {
+                    pid: coordinator.get_environment_readings_for_plant(pid)
+                    for pid in target_ids
+                }
+                if should_snapshot
+                else {}
             )
+            created_list = await coordinator.db.async_create_logs_batch(
+                target_ids,
+                payload,
+                split_water_volume=split_vol,
+                env_readings_by_plant=readings_map,
+            )
+            for created in created_list:
+                hass.bus.async_fire(
+                    EVENT_LOG_CREATED,
+                    {
+                        "log_id": created["id"],
+                        "plant_id": created.get("plant_id"),
+                        "log_type": created["log_type"],
+                        "status": created.get("status"),
+                    },
+                )
+            await coordinator.async_request_refresh()
+            return
 
         created = await coordinator.db.async_create_log(payload)
         hass.bus.async_fire(
             EVENT_LOG_CREATED,
             {
                 "log_id": created["id"],
-                "plant_id": plant_id,
+                "plant_id": None,
                 "log_type": created["log_type"],
                 "status": created.get("status"),
             },
@@ -147,25 +220,36 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
     async def handle_set_stage(call: ServiceCall) -> None:
         coordinator = _get_coordinator(hass)
-        plant_id = _resolve_plant_id(coordinator, call.data["plant"])
+        target_ids = _resolve_target_plant_ids(
+            coordinator,
+            plant_ref=call.data.get("plant"),
+            plant_refs=call.data.get("plants"),
+            environment_ref=call.data.get("environment_id"),
+        )
+        if not target_ids:
+            raise HomeAssistantError(
+                "Provide 'plant', 'plants', or 'environment_id' to set stage"
+            )
         stage = call.data["stage"]
         changed_at = call.data.get("changed_at")
         if changed_at and is_timestamp_in_future(changed_at):
-            await coordinator.db.async_schedule_stage_change(
-                plant_id,
-                stage,
-                changed_at,
-                auto_apply=call.data.get("auto_apply", True),
-                notes=call.data.get("notes"),
-            )
+            for pid in target_ids:
+                await coordinator.db.async_schedule_stage_change(
+                    pid,
+                    stage,
+                    changed_at,
+                    auto_apply=call.data.get("auto_apply", True),
+                    notes=call.data.get("notes"),
+                )
             await coordinator.async_request_refresh()
             return
-        await coordinator.db.async_set_plant_stage(
-            plant_id, stage, notes=call.data.get("notes"), changed_at=changed_at
+        updated = await coordinator.db.async_batch_set_plant_stage(
+            target_ids, stage, notes=call.data.get("notes"), changed_at=changed_at
         )
-        hass.bus.async_fire(
-            EVENT_STAGE_CHANGED, {"plant_id": plant_id, "stage": stage}
-        )
+        for item in updated:
+            hass.bus.async_fire(
+                EVENT_STAGE_CHANGED, {"plant_id": item["id"], "stage": stage}
+            )
         await coordinator.async_request_refresh()
 
     async def handle_advance_stage(call: ServiceCall) -> None:
@@ -262,7 +346,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
         schema=vol.Schema(
             {
                 vol.Optional("plant"): cv.string,
+                vol.Optional("plants"): [cv.string],
                 vol.Optional("environment_id"): cv.string,
+                vol.Optional("split_water_volume", default=False): cv.boolean,
                 vol.Required("log_type"): vol.In(LOG_TYPES),
                 vol.Optional("title"): cv.string,
                 vol.Optional("notes"): cv.string,
@@ -288,7 +374,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
         handle_set_stage,
         schema=vol.Schema(
             {
-                vol.Required("plant"): cv.string,
+                vol.Optional("plant"): cv.string,
+                vol.Optional("plants"): [cv.string],
+                vol.Optional("environment_id"): cv.string,
                 vol.Required("stage"): vol.In(GROW_STAGES),
                 vol.Optional("notes"): cv.string,
                 vol.Optional("changed_at"): cv.string,

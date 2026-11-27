@@ -974,6 +974,40 @@ export const PANEL_STYLES = `
   gap: 6px;
 }
 
+/* Batch Multi-Select Toolbar & Card Highlights */
+.batch-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border-radius: var(--igro-radius);
+  background: rgba(22, 163, 74, 0.12);
+  border: 1px solid var(--igro-accent);
+}
+
+.card.selected-card {
+  border-color: var(--igro-accent);
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.35), var(--igro-shadow);
+}
+
+.select-check-pill {
+  background: rgba(15, 23, 42, 0.85);
+  color: #fff;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.select-check-pill.checked {
+  background: var(--igro-accent);
+  border-color: var(--igro-accent);
+}
+
 @media (max-width: 680px) {
   .container { padding: 14px; }
   .form-grid { grid-template-columns: 1fr; }
