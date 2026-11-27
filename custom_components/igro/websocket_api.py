@@ -14,6 +14,7 @@ from .calculations import (
     is_timestamp_near_now,
 )
 from .const import (
+    ACTIVE_STAGES,
     BREEDING_GENERATIONS,
     DOMAIN,
     DOSING_CHANNEL_ROLES,
@@ -56,6 +57,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_create_plant,
         ws_update_plant,
         ws_set_plant_stage,
+        ws_batch_move_plants,
         ws_delete_plant,
         ws_list_logs,
         ws_create_log,
@@ -388,13 +390,46 @@ async def ws_update_plant(
     connection.send_result(msg["id"], {"plant": updated})
 
 
+def _resolve_batch_plant_ids(
+    coordinator: IGroCoordinator,
+    *,
+    plant_id: str | None = None,
+    plant_ids: list[str] | None = None,
+    environment_id: str | None = None,
+) -> list[str]:
+    """Resolve target plant IDs from single plant, explicit list, or active tent plants."""
+    if plant_ids:
+        return list(dict.fromkeys(pid for pid in plant_ids if pid))
+    if environment_id:
+        plants = (coordinator.data or {}).get("plants", {})
+        active = [
+            pid
+            for pid, p in plants.items()
+            if p.get("environment_id") == environment_id
+            and p.get("stage") in ACTIVE_STAGES
+        ]
+        if active:
+            return active
+        return [
+            pid
+            for pid, p in plants.items()
+            if p.get("environment_id") == environment_id
+        ]
+    if plant_id:
+        return [plant_id]
+    return []
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): f"{DOMAIN}/plants/set_stage",
-        vol.Required("plant_id"): str,
+        vol.Optional("plant_id"): vol.Any(str, None),
+        vol.Optional("plant_ids"): [str],
+        vol.Optional("environment_id"): vol.Any(str, None),
         vol.Required("stage"): vol.In(GROW_STAGES),
         vol.Optional("notes"): vol.Any(str, None),
         vol.Optional("changed_at"): vol.Any(str, None),
+        vol.Optional("auto_apply", default=True): bool,
     }
 )
 @websocket_api.async_response
@@ -403,26 +438,92 @@ async def ws_set_plant_stage(
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    """Change a plant's grow stage."""
+    """Change grow stage for one plant, a selected list, or an entire environment."""
     coordinator = _get_coordinator(hass)
     if coordinator is None:
         connection.send_error(msg["id"], "not_ready", "iGro not initialized")
         return
-    updated = await coordinator.db.async_set_plant_stage(
-        msg["plant_id"],
-        msg["stage"],
-        notes=msg.get("notes"),
-        changed_at=msg.get("changed_at"),
+
+    target_ids = _resolve_batch_plant_ids(
+        coordinator,
+        plant_id=msg.get("plant_id"),
+        plant_ids=msg.get("plant_ids"),
+        environment_id=msg.get("environment_id"),
     )
-    if updated is None:
+    if not target_ids:
+        connection.send_error(msg["id"], "not_found", "No matching plants found")
+        return
+
+    changed_at = msg.get("changed_at")
+    stage = msg["stage"]
+    notes = msg.get("notes")
+
+    if changed_at and is_timestamp_in_future(changed_at):
+        schedules = []
+        for pid in target_ids:
+            schedules.append(
+                await coordinator.db.async_schedule_stage_change(
+                    pid,
+                    stage,
+                    changed_at,
+                    auto_apply=msg.get("auto_apply", True),
+                    notes=notes,
+                )
+            )
+        await coordinator.async_request_refresh()
+        connection.send_result(
+            msg["id"],
+            {"scheduled": schedules, "count": len(schedules)},
+        )
+        return
+
+    updated_list = await coordinator.db.async_batch_set_plant_stage(
+        target_ids, stage, notes=notes, changed_at=changed_at
+    )
+    if not updated_list:
         connection.send_error(msg["id"], "not_found", "Plant not found")
         return
-    hass.bus.async_fire(
-        EVENT_STAGE_CHANGED,
-        {"plant_id": msg["plant_id"], "stage": msg["stage"]},
-    )
+    for item in updated_list:
+        hass.bus.async_fire(
+            EVENT_STAGE_CHANGED,
+            {"plant_id": item["id"], "stage": stage},
+        )
     await coordinator.async_request_refresh()
-    connection.send_result(msg["id"], {"plant": updated})
+    connection.send_result(
+        msg["id"],
+        {
+            "plant": updated_list[0],
+            "plants": updated_list,
+            "count": len(updated_list),
+        },
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/plants/batch_move",
+        vol.Required("plant_ids"): [str],
+        vol.Optional("environment_id"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+async def ws_batch_move_plants(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Move multiple plants to a target environment (or unassign)."""
+    coordinator = _get_coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_ready", "iGro not initialized")
+        return
+    updated = await coordinator.db.async_batch_move_plants(
+        msg["plant_ids"], msg.get("environment_id")
+    )
+    await coordinator.async_notify_structure_changed()
+    connection.send_result(
+        msg["id"], {"plants": updated, "count": len(updated)}
+    )
 
 
 @websocket_api.websocket_command(
@@ -505,6 +606,9 @@ async def ws_list_logs(
     {
         vol.Required("type"): f"{DOMAIN}/logs/create",
         vol.Required("data"): dict,
+        vol.Optional("plant_ids"): [str],
+        vol.Optional("environment_id"): vol.Any(str, None),
+        vol.Optional("split_water_volume", default=False): bool,
     }
 )
 @websocket_api.async_response
@@ -513,19 +617,68 @@ async def ws_create_log(
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    """Create a journal log entry, snapshotting live climate only when near now."""
+    """Create one or a batch of journal log entries, snapshotting live climate near now."""
     coordinator = _get_coordinator(hass)
     if coordinator is None:
         connection.send_error(msg["id"], "not_ready", "iGro not initialized")
         return
 
     payload = dict(msg["data"])
+    raw_plant_ids = msg.get("plant_ids") or payload.pop("plant_ids", None)
+    batch_env_id = msg.get("environment_id") or payload.pop("batch_environment_id", None)
+    split_vol = bool(
+        msg.get("split_water_volume") or payload.pop("split_water_volume", False)
+    )
+
     logged_at = payload.get("logged_at")
     status = payload.get("status")
     is_planned = status == "planned" or (
         status is None and is_timestamp_in_future(logged_at)
     )
-    if not is_planned and is_timestamp_near_now(logged_at):
+    should_snapshot = not is_planned and is_timestamp_near_now(logged_at)
+
+    batch_ids = _resolve_batch_plant_ids(
+        coordinator,
+        plant_ids=raw_plant_ids,
+        environment_id=batch_env_id,
+    )
+    if batch_ids:
+        env_readings_map = (
+            {
+                pid: coordinator.get_environment_readings_for_plant(pid)
+                for pid in batch_ids
+            }
+            if should_snapshot
+            else {}
+        )
+        created_list = await coordinator.db.async_create_logs_batch(
+            batch_ids,
+            payload,
+            split_water_volume=split_vol,
+            env_readings_by_plant=env_readings_map,
+        )
+        for created in created_list:
+            hass.bus.async_fire(
+                EVENT_LOG_CREATED,
+                {
+                    "log_id": created["id"],
+                    "plant_id": created.get("plant_id"),
+                    "log_type": created.get("log_type"),
+                    "status": created.get("status"),
+                },
+            )
+        await coordinator.async_request_refresh()
+        connection.send_result(
+            msg["id"],
+            {
+                "log": created_list[0] if created_list else None,
+                "logs": created_list,
+                "count": len(created_list),
+            },
+        )
+        return
+
+    if should_snapshot:
         env_readings = coordinator.get_environment_readings_for_plant(
             payload.get("plant_id")
         )
@@ -544,7 +697,7 @@ async def ws_create_log(
         },
     )
     await coordinator.async_request_refresh()
-    connection.send_result(msg["id"], {"log": created})
+    connection.send_result(msg["id"], {"log": created, "logs": [created], "count": 1})
 
 
 @websocket_api.websocket_command(

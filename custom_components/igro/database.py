@@ -21,6 +21,7 @@ from .calculations import (
     calculate_seed_maturity_date,
     is_timestamp_in_future,
     parse_iso_datetime,
+    scale_nutrients_for_volume,
 )
 from .const import (
     DEFAULT_LEAF_TEMP_OFFSET_C,
@@ -3818,3 +3819,112 @@ class IGroDatabase:
                 (plant_id, today_prefix),
             ).fetchone()[0]
             return round(float(val or 0.0), 1)
+
+    # ------------------------------------------------------------------
+    # Batch Multi-Plant / Whole-Tent Operations (Issue #9)
+    # ------------------------------------------------------------------
+    async def async_create_logs_batch(
+        self,
+        plant_ids: list[str],
+        data: dict[str, Any],
+        *,
+        split_water_volume: bool = False,
+        env_readings_by_plant: dict[str, dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Create journal entries across multiple plants in one batch operation."""
+        return await self._run(
+            self._create_logs_batch_sync,
+            plant_ids,
+            data,
+            split_water_volume,
+            env_readings_by_plant or {},
+        )
+
+    def _create_logs_batch_sync(
+        self,
+        plant_ids: list[str],
+        data: dict[str, Any],
+        split_water_volume: bool,
+        env_readings_by_plant: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        unique_ids = list(dict.fromkeys(pid for pid in plant_ids if pid))
+        if not unique_ids:
+            return []
+
+        base = dict(data)
+        raw_vol = base.get("water_volume_ml")
+        per_plant_vol = raw_vol
+        if split_water_volume and raw_vol is not None:
+            per_plant_vol = round(float(raw_vol) / len(unique_ids), 1)
+
+        base_nutrients = base.get("nutrients")
+        if split_water_volume and base_nutrients and per_plant_vol is not None:
+            base_nutrients = scale_nutrients_for_volume(base_nutrients, per_plant_vol)
+
+        created: list[dict[str, Any]] = []
+        for pid in unique_ids:
+            entry = {**base, "plant_id": pid}
+            if per_plant_vol is not None:
+                entry["water_volume_ml"] = per_plant_vol
+            if base_nutrients is not None:
+                entry["nutrients"] = base_nutrients
+            readings = env_readings_by_plant.get(pid) or {}
+            for k in ("temp_c", "humidity", "vpd_kpa"):
+                if entry.get(k) is None and readings.get(k) is not None:
+                    entry[k] = readings[k]
+            created.append(self._create_log_sync(entry))
+        return created
+
+    async def async_batch_set_plant_stage(
+        self,
+        plant_ids: list[str],
+        stage: str,
+        notes: str | None = None,
+        changed_at: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Transition multiple plants to a target growth stage."""
+        return await self._run(
+            self._batch_set_plant_stage_sync, plant_ids, stage, notes, changed_at
+        )
+
+    def _batch_set_plant_stage_sync(
+        self,
+        plant_ids: list[str],
+        stage: str,
+        notes: str | None,
+        changed_at: str | None,
+    ) -> list[dict[str, Any]]:
+        updated: list[dict[str, Any]] = []
+        for pid in dict.fromkeys(p for p in plant_ids if p):
+            res = self._set_plant_stage_sync(pid, stage, notes, changed_at)
+            if res is not None:
+                updated.append(res)
+        return updated
+
+    async def async_batch_move_plants(
+        self, plant_ids: list[str], environment_id: str | None
+    ) -> list[dict[str, Any]]:
+        """Bulk-assign multiple plants to a target environment (or unassign)."""
+        return await self._run(self._batch_move_plants_sync, plant_ids, environment_id)
+
+    def _batch_move_plants_sync(
+        self, plant_ids: list[str], environment_id: str | None
+    ) -> list[dict[str, Any]]:
+        unique_ids = list(dict.fromkeys(p for p in plant_ids if p))
+        if not unique_ids:
+            return []
+        now = utc_now_iso()
+        target_env = environment_id or None
+        updated: list[dict[str, Any]] = []
+        with self._connect() as conn:
+            for pid in unique_ids:
+                conn.execute(
+                    "UPDATE plants SET environment_id = ?, updated_at = ? WHERE id = ?",
+                    (target_env, now, pid),
+                )
+                row = conn.execute(
+                    "SELECT * FROM plants WHERE id = ?", (pid,)
+                ).fetchone()
+                if row:
+                    updated.append(dict(row))
+        return updated

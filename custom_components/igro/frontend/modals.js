@@ -18,7 +18,7 @@ import {
   scaleNutrientsForVolume,
   stageBadgeHtml,
   toLocalDatetimeInput,
-} from "./api.js?v=0.7.0";
+} from "./api.js?v=0.8.0";
 
 function entityOptionsHtml(entities = [], selected = "", placeholder = "None") {
   const opts = [`<option value="">${escapeHtml(placeholder)}</option>`];
@@ -298,6 +298,9 @@ function nutrientUnitSelectHtml(selected = "mL/L") {
 
 export function renderLogModal(defaults, state) {
   const isEdit = Boolean(defaults.id);
+  const batchPlantIds = Array.isArray(defaults.batch_plant_ids) ? defaults.batch_plant_ids : [];
+  const isBatch = batchPlantIds.length > 0 || Boolean(defaults.batch_environment_id);
+  const batchCount = batchPlantIds.length;
   const selectedType = defaults.log_type || "water";
   const selectedPlantId =
     defaults.plant_id !== undefined ? defaults.plant_id || "" : state.plants?.[0]?.id ?? "";
@@ -324,11 +327,18 @@ export function renderLogModal(defaults, state) {
     <div class="modal-backdrop" data-close-modal="1">
       <div class="modal" role="dialog" aria-modal="true">
         <div class="modal-header">
-          <h3 class="modal-title">${isEdit ? "✏️ Edit Journal Entry" : "📓 Log Grow Action"}</h3>
+          <h3 class="modal-title">${isEdit ? "✏️ Edit Journal Entry" : isBatch ? `📦 Batch Grow Action (${defaults.batch_label || `${batchCount} plants`})` : "📓 Log Grow Action"}</h3>
           <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
         </div>
         <form id="log-form">
           <div class="modal-body">
+            ${
+              isBatch
+                ? `<div style="padding:10px 12px;border-radius:10px;background:rgba(22,163,74,0.12);border:1px solid var(--igro-accent);font-size:13px;margin-bottom:4px;">
+                    <strong>📦 Batch Target:</strong> ${escapeHtml(defaults.batch_label || `${batchCount} selected plants`)}
+                  </div>`
+                : ""
+            }
             <div class="form-field">
               <label class="form-label">Action Type</label>
               <input type="hidden" name="log_type" value="${escapeHtml(selectedType)}" />
@@ -343,14 +353,20 @@ export function renderLogModal(defaults, state) {
             </div>
 
             <div class="form-grid">
-              <div class="form-field">
-                <label class="form-label">Plant</label>
-                <select class="select" name="plant_id">
-                  <option value="">General / All Plants</option>
-                  ${(state.plants || []).map((p) => `<option value="${escapeHtml(p.id)}" ${selectedPlantId === p.id ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}
-                </select>
-              </div>
-              <div class="form-field">
+              ${
+                isBatch
+                  ? ""
+                  : `
+                <div class="form-field">
+                  <label class="form-label">Plant</label>
+                  <select class="select" name="plant_id">
+                    <option value="">General / All Plants</option>
+                    ${(state.plants || []).map((p) => `<option value="${escapeHtml(p.id)}" ${selectedPlantId === p.id ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}
+                  </select>
+                </div>
+              `
+              }
+              <div class="form-field ${isBatch ? "full" : ""}">
                 <label class="form-label">Title (optional)</label>
                 <input class="input" name="title" placeholder="${escapeHtml(LOG_TYPE_META[selectedType]?.label || "Summary")}" value="${escapeHtml(defaults.title || "")}" />
               </div>
@@ -397,9 +413,21 @@ export function renderLogModal(defaults, state) {
                 showWaterFields
                   ? `
                 <div class="form-field">
-                  <label class="form-label">Water Volume (mL)</label>
+                  <label class="form-label">Water Volume (mL)${isBatch ? " — Total or Per-Plant" : ""}</label>
                   <input class="input" type="number" step="50" name="water_volume_ml" placeholder="e.g. 2000" value="${defaults.water_volume_ml ?? ""}" />
                 </div>
+                ${
+                  isBatch
+                    ? `
+                  <div class="form-field full">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600;">
+                      <input type="checkbox" name="split_water_volume" ${defaults.split_water_volume ? "checked" : ""} />
+                      <span>⚖️ Split total water volume evenly across all targeted plants (unchecked = apply full volume to each plant)</span>
+                    </label>
+                  </div>
+                `
+                    : ""
+                }
                 <div class="form-field">
                   <label class="form-label">Input pH</label>
                   <input class="input" type="number" step="0.1" min="0" max="14" name="ph" placeholder="e.g. 6.3" value="${defaults.ph ?? ""}" />
@@ -2127,6 +2155,89 @@ export function renderFertigationModal({ plant, schedule }, state, haEntities) {
           <div class="modal-footer">
             <button type="button" class="btn" data-close-modal="1">Cancel</button>
             <button type="submit" class="btn btn-primary">Save Fertigation Schedule</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderBatchStageModal({ label, defaultStage = "flowering" }, state) {
+  const stages = state.meta?.stages || Object.keys(STAGE_META);
+  const todayLocal = new Date(Date.now() - new Date().getTimezoneOffset() * 60000)
+    .toISOString()
+    .slice(0, 10);
+
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" style="max-width:480px;" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">🔄 Batch Stage Transition</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="batch-stage-form">
+          <div class="modal-body">
+            <div style="padding:10px 12px;border-radius:10px;background:rgba(22,163,74,0.12);border:1px solid var(--igro-accent);font-size:13px;">
+              <strong>Target:</strong> ${escapeHtml(label)}
+            </div>
+            <input type="hidden" name="today_default" value="${todayLocal}" />
+            <div class="form-field">
+              <label class="form-label">Target Grow Stage *</label>
+              <select class="select" name="stage" required>
+                ${stages.map((s) => `<option value="${s}" ${defaultStage === s ? "selected" : ""}>${STAGE_META[s]?.icon || ""} ${STAGE_META[s]?.label || s}</option>`).join("")}
+              </select>
+            </div>
+            <div class="form-field">
+              <label class="form-label">Transition Date (past to backdate, future to schedule)</label>
+              <input class="input" type="date" id="batch-stage-date" name="changed_at" value="${todayLocal}" />
+            </div>
+            <div id="batch-stage-schedule-opts" style="display:none;padding:10px 12px;border-radius:10px;background:rgba(14,165,233,0.12);border:1px solid rgba(14,165,233,0.35);font-size:13px;">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                <input type="checkbox" name="auto_apply" checked />
+                <span>Auto-apply transition for all targeted plants on this date</span>
+              </label>
+            </div>
+            <div class="form-field">
+              <label class="form-label">Notes (optional)</label>
+              <textarea class="textarea" name="notes" placeholder="e.g. Flipped entire tent to 12/12 flowering schedule..."></textarea>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary" id="batch-stage-submit">🔄 Update Stages</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+export function renderBatchMoveModal({ label }, state) {
+  return `
+    <div class="modal-backdrop" data-close-modal="1">
+      <div class="modal" style="max-width:440px;" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <h3 class="modal-title">⛺ Move Plants to Environment</h3>
+          <button class="btn btn-icon btn-sm" data-close-modal="1">✕</button>
+        </div>
+        <form id="batch-move-form">
+          <div class="modal-body">
+            <div style="padding:10px 12px;border-radius:10px;background:rgba(22,163,74,0.12);border:1px solid var(--igro-accent);font-size:13px;">
+              <strong>Moving:</strong> ${escapeHtml(label)}
+            </div>
+            <div class="form-field">
+              <label class="form-label">Destination Environment / Tent</label>
+              <select class="select" name="environment_id">
+                <option value="">Unassigned (No Tent)</option>
+                ${(state.environments || [])
+                  .map((e) => `<option value="${escapeHtml(e.id)}">⛺ ${escapeHtml(e.name)}</option>`)
+                  .join("")}
+              </select>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn" data-close-modal="1">Cancel</button>
+            <button type="submit" class="btn btn-primary">⛺ Move Plants</button>
           </div>
         </form>
       </div>

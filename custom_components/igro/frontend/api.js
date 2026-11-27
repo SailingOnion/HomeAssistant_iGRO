@@ -275,6 +275,29 @@ export class IGroApi {
     return this.hass.callWS(payload);
   }
 
+  async setBatchPlantStage({
+    plant_ids = null,
+    environment_id = null,
+    stage,
+    notes = null,
+    changed_at = null,
+    auto_apply = true,
+  }) {
+    const payload = { type: "igro/plants/set_stage", stage, notes, auto_apply };
+    if (plant_ids?.length) payload.plant_ids = plant_ids;
+    if (environment_id) payload.environment_id = environment_id;
+    if (changed_at) payload.changed_at = changed_at;
+    return this.hass.callWS(payload);
+  }
+
+  async batchMovePlants(plant_ids, environment_id = null) {
+    return this.hass.callWS({
+      type: "igro/plants/batch_move",
+      plant_ids,
+      environment_id,
+    });
+  }
+
   async deletePlant(plant_id) {
     return this.hass.callWS({ type: "igro/plants/delete", plant_id });
   }
@@ -285,6 +308,20 @@ export class IGroApi {
 
   async createLog(data) {
     return this.hass.callWS({ type: "igro/logs/create", data });
+  }
+
+  async createBatchLog(
+    data,
+    { plant_ids = null, environment_id = null, split_water_volume = false } = {}
+  ) {
+    const payload = {
+      type: "igro/logs/create",
+      data,
+      split_water_volume: Boolean(split_water_volume),
+    };
+    if (plant_ids?.length) payload.plant_ids = plant_ids;
+    if (environment_id) payload.environment_id = environment_id;
+    return this.hass.callWS(payload);
   }
 
   async updateLog(log_id, data) {

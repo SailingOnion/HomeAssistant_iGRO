@@ -4,10 +4,22 @@ log_action:
   fields:
     plant:
       name: Plant
-      description: Plant ID or exact plant name.
+      description: Plant ID or exact plant name (optional when targeting an environment).
       example: "Northern Lights #1"
       selector:
         text:
+    environment_id:
+      name: Environment (Whole-Tent Batch)
+      description: Environment ID or exact tent name to log this action for all active plants in that tent.
+      example: "4x4 Flower Tent"
+      selector:
+        text:
+    split_water_volume:
+      name: Split water volume across plants
+      description: When logging for multiple plants, divide water_volume_ml evenly across all targeted plants.
+      default: false
+      selector:
+        boolean:
     log_type:
       name: Action type
       description: Type of grow action to log.
@@ -100,12 +112,17 @@ log_action:
 
 set_stage:
   name: Set plant stage
-  description: Transition a plant to a specific grow lifecycle stage (supports past backdating or future scheduling).
+  description: Transition one plant or all active plants in an environment to a specific grow lifecycle stage (supports past backdating or future scheduling).
   fields:
     plant:
       name: Plant
-      description: Plant ID or exact plant name.
-      required: true
+      description: Plant ID or exact plant name (optional if environment_id is provided).
+      selector:
+        text:
+    environment_id:
+      name: Environment (Flip Whole Tent)
+      description: Optional environment ID or exact tent name to transition all active plants in that tent at once.
+      example: "4x4 Flower Tent"
       selector:
         text:
     stage:
